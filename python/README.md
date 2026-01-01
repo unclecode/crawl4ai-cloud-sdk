@@ -12,7 +12,7 @@ Lightweight Python SDK for [Crawl4AI Cloud API](https://api.crawl4ai.com). Mirro
 pip install crawl4ai-cloud
 
 # From repository
-pip install git+https://github.com/unclecode/crawl4ai-cloud.git#subdirectory=python
+pip install git+https://github.com/unclecode/crawl4ai-cloud-sdk.git#subdirectory=python
 ```
 
 ## Get Your API Key

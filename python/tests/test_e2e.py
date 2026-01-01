@@ -328,6 +328,125 @@ class TestCrawlerRunConfig:
         assert "no_cache_write" not in sanitized
         assert sanitized.get("screenshot") is True
 
+    # ==========================================================================
+    # NEW PARAMETER TESTS (Issues #365, #366)
+    # ==========================================================================
+
+    def test_config_css_selector_exists(self):
+        """Test that css_selector parameter is accepted."""
+        config = CrawlerRunConfig(css_selector="article")
+        assert config.css_selector == "article"
+
+    def test_config_excluded_tags_exists(self):
+        """Test that excluded_tags parameter is accepted."""
+        config = CrawlerRunConfig(excluded_tags=["nav", "footer", "aside"])
+        assert config.excluded_tags == ["nav", "footer", "aside"]
+
+    def test_config_excluded_selector_exists(self):
+        """Test that excluded_selector parameter is accepted."""
+        config = CrawlerRunConfig(excluded_selector=".ads, .sidebar")
+        assert config.excluded_selector == ".ads, .sidebar"
+
+    def test_config_target_elements_exists(self):
+        """Test that target_elements parameter is accepted."""
+        config = CrawlerRunConfig(target_elements=["main", "article"])
+        assert config.target_elements == ["main", "article"]
+
+    def test_config_wait_until_exists(self):
+        """Test that wait_until parameter is accepted."""
+        config = CrawlerRunConfig(wait_until="networkidle")
+        assert config.wait_until == "networkidle"
+
+    def test_config_wait_until_default(self):
+        """Test that wait_until defaults to domcontentloaded."""
+        config = CrawlerRunConfig()
+        assert config.wait_until == "domcontentloaded"
+
+    def test_config_remove_overlay_elements_exists(self):
+        """Test that remove_overlay_elements parameter is accepted."""
+        config = CrawlerRunConfig(remove_overlay_elements=True)
+        assert config.remove_overlay_elements is True
+
+    def test_config_max_scroll_steps_exists(self):
+        """Test that max_scroll_steps parameter is accepted."""
+        config = CrawlerRunConfig(max_scroll_steps=10)
+        assert config.max_scroll_steps == 10
+
+    def test_config_exclude_internal_links_exists(self):
+        """Test that exclude_internal_links parameter is accepted."""
+        config = CrawlerRunConfig(exclude_internal_links=True)
+        assert config.exclude_internal_links is True
+
+    def test_config_keep_attrs_exists(self):
+        """Test that keep_attrs parameter is accepted."""
+        config = CrawlerRunConfig(keep_attrs=["href", "src", "alt"])
+        assert config.keep_attrs == ["href", "src", "alt"]
+
+    def test_config_wait_for_timeout_exists(self):
+        """Test that wait_for_timeout parameter is accepted."""
+        config = CrawlerRunConfig(wait_for_timeout=5000)
+        assert config.wait_for_timeout == 5000
+
+    def test_config_all_new_params_dump(self):
+        """Test that all new parameters are included in dump()."""
+        config = CrawlerRunConfig(
+            css_selector="main",
+            excluded_tags=["nav"],
+            excluded_selector=".sidebar",
+            target_elements=["article"],
+            wait_until="load",
+            remove_overlay_elements=True,
+            max_scroll_steps=5,
+            exclude_internal_links=True,
+            keep_attrs=["id"],
+            wait_for_timeout=3000,
+        )
+        data = config.dump()
+
+        assert data["css_selector"] == "main"
+        assert data["excluded_tags"] == ["nav"]
+        assert data["excluded_selector"] == ".sidebar"
+        assert data["target_elements"] == ["article"]
+        assert data["wait_until"] == "load"
+        assert data["remove_overlay_elements"] is True
+        assert data["max_scroll_steps"] == 5
+        assert data["exclude_internal_links"] is True
+        assert data["keep_attrs"] == ["id"]
+        assert data["wait_for_timeout"] == 3000
+
+    @pytest.mark.asyncio
+    async def test_config_css_selector_crawl(self):
+        """Test crawl with css_selector extracts specific content."""
+        config = CrawlerRunConfig(css_selector="h1")
+
+        async with AsyncWebCrawler(api_key=API_KEY) as crawler:
+            result = await crawler.run(TEST_URL, config=config)
+
+            assert result.success is True
+            # h1 on example.com is "Example Domain"
+            if result.markdown and result.markdown.raw_markdown:
+                assert "Example Domain" in result.markdown.raw_markdown
+
+    @pytest.mark.asyncio
+    async def test_config_excluded_tags_crawl(self):
+        """Test crawl with excluded_tags."""
+        config = CrawlerRunConfig(excluded_tags=["script", "style"])
+
+        async with AsyncWebCrawler(api_key=API_KEY) as crawler:
+            result = await crawler.run(TEST_URL, config=config)
+
+            assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_config_wait_until_crawl(self):
+        """Test crawl with wait_until parameter."""
+        config = CrawlerRunConfig(wait_until="domcontentloaded")
+
+        async with AsyncWebCrawler(api_key=API_KEY) as crawler:
+            result = await crawler.run(TEST_URL, config=config)
+
+            assert result.success is True
+
 
 class TestBrowserConfig:
     """Test BrowserConfig functionality."""

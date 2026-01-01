@@ -43,6 +43,8 @@ class CrawlerRunConfig:
             word_count_threshold=10,
             exclude_external_links=True,
             process_iframes=True,
+            css_selector="article",
+            excluded_tags=["nav", "footer"],
         )
         result = await crawler.run(url, config=config)
     """
@@ -53,10 +55,17 @@ class CrawlerRunConfig:
     exclude_external_images: bool = False
     exclude_domains: List[str] = field(default_factory=list)
 
+    # Content selection (for targeting specific page elements)
+    css_selector: Optional[str] = None
+    target_elements: List[str] = field(default_factory=list)
+    excluded_tags: List[str] = field(default_factory=list)
+    excluded_selector: Optional[str] = None
+
     # HTML processing
     process_iframes: bool = False
     remove_forms: bool = False
     keep_data_attributes: bool = False
+    keep_attrs: List[str] = field(default_factory=list)
 
     # Output options
     only_text: bool = False
@@ -76,7 +85,9 @@ class CrawlerRunConfig:
     markdown_generator: Optional[Any] = None
 
     # Wait conditions
+    wait_until: str = "domcontentloaded"
     wait_for: Optional[str] = None
+    wait_for_timeout: Optional[int] = None
     delay_before_return_html: float = 0.0
 
     # Page interaction
@@ -85,11 +96,16 @@ class CrawlerRunConfig:
     ignore_body_visibility: bool = True
     scan_full_page: bool = False
     scroll_delay: float = 0.2
+    max_scroll_steps: Optional[int] = None
+    remove_overlay_elements: bool = False
 
     # Network
     wait_for_images: bool = False
     adjust_viewport_to_content: bool = False
     page_timeout: int = 60000
+
+    # Link handling
+    exclude_internal_links: bool = False
 
     # Cache (cloud-controlled, will be stripped)
     cache_mode: Optional[str] = None
@@ -105,6 +121,10 @@ class CrawlerRunConfig:
     # Simulate user
     simulate_user: bool = False
     override_navigator: bool = False
+
+    # Debugging
+    verbose: bool = False
+    log_console: bool = False
 
     # Additional fields stored as extras
     _extras: Dict[str, Any] = field(default_factory=dict, repr=False)

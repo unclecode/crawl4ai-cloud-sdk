@@ -29,7 +29,7 @@ func (p *JobProgress) Percent() float64 {
 
 // CrawlJob represents an async crawl job.
 type CrawlJob struct {
-	ID              string                   `json:"id"`
+	JobID           string                   `json:"job_id"`
 	Status          string                   `json:"status"`
 	Progress        JobProgress              `json:"progress"`
 	URLsCount       int                      `json:"urls_count"`
@@ -39,6 +39,12 @@ type CrawlJob struct {
 	Results         []map[string]interface{} `json:"results,omitempty"`
 	Error           string                   `json:"error,omitempty"`
 	ResultSizeBytes int                      `json:"result_size_bytes,omitempty"`
+}
+
+// ID returns the job ID (backward compatibility alias for JobID).
+// Deprecated: Use JobID instead.
+func (j *CrawlJob) ID() string {
+	return j.JobID
 }
 
 // IsComplete checks if job is in a terminal state.
@@ -60,7 +66,7 @@ func CrawlJobFromMap(data map[string]interface{}) *CrawlJob {
 	job := &CrawlJob{}
 
 	if v, ok := data["job_id"].(string); ok {
-		job.ID = v
+		job.JobID = v
 	}
 	if v, ok := data["status"].(string); ok {
 		job.Status = v

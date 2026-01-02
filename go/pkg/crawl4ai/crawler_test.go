@@ -447,7 +447,7 @@ func TestListJobs(t *testing.T) {
 
 	// Jobs may be empty if none exist
 	for _, job := range jobs {
-		if job.ID == "" {
+		if job.JobID == "" {
 			t.Fatal("Job ID is empty")
 		}
 		if job.Status == "" {

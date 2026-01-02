@@ -39,6 +39,8 @@ export function getProgressPercent(progress: JobProgress): number {
  * Async crawl job returned by runMany().
  */
 export interface CrawlJob {
+  jobId: string;
+  /** @deprecated Use jobId instead */
   id: string;
   status: string;
   progress: JobProgress;
@@ -70,8 +72,10 @@ export function isJobSuccessful(job: CrawlJob): boolean {
  */
 export function crawlJobFromDict(data: Record<string, unknown>): CrawlJob {
   const progressData = (data.progress || {}) as Record<string, unknown>;
+  const jobId = (data.job_id || '') as string;
   return {
-    id: (data.job_id || '') as string,
+    jobId,
+    id: jobId, // backward compatibility alias
     status: (data.status || 'unknown') as string,
     progress: {
       total: (progressData.total || 0) as number,

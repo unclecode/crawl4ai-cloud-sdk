@@ -276,7 +276,7 @@ export class AsyncWebCrawler {
     let job = crawlJobFromDict(data);
 
     if (wait) {
-      job = await this.waitJob(job.id, {
+      job = await this.waitJob(job.jobId, {
         pollInterval,
         timeout,
         includeResults: true,

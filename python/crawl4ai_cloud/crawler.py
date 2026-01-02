@@ -274,7 +274,7 @@ class AsyncWebCrawler:
 
         # Wrap in a "completed" job for consistent return type
         return CrawlJob(
-            id="batch_" + str(int(time.time())),
+            job_id="batch_" + str(int(time.time())),
             status="completed",
             progress=JobProgress(total=len(urls), completed=len(urls), failed=0),
             urls_count=len(urls),
@@ -407,7 +407,7 @@ class AsyncWebCrawler:
 
             # Scan only mode (no crawl job) - return CrawlJob-like response
             return CrawlJob(
-                id=job_id,
+                job_id=job_id,
                 status=scan_result.status,
                 progress=JobProgress(
                     total=scan_result.discovered_count,

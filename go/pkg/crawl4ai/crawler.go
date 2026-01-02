@@ -195,7 +195,7 @@ func (c *AsyncWebCrawler) runAsync(urls []string, opts *RunManyOptions) (*RunMan
 			pollInterval = 2 * time.Second
 		}
 
-		job, err = c.WaitJob(job.ID, pollInterval, opts.Timeout, true)
+		job, err = c.WaitJob(job.JobID, pollInterval, opts.Timeout, true)
 		if err != nil {
 			return nil, err
 		}

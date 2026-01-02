@@ -61,7 +61,7 @@ class JobProgress:
 @dataclass
 class CrawlJob:
     """Async crawl job returned by run_many()."""
-    id: str
+    job_id: str
     status: str
     progress: JobProgress
     urls_count: int
@@ -71,6 +71,11 @@ class CrawlJob:
     results: Optional[List[Dict[str, Any]]] = None
     error: Optional[str] = None
     result_size_bytes: Optional[int] = None
+
+    @property
+    def id(self) -> str:
+        """Alias for job_id (backward compatibility)."""
+        return self.job_id
 
     @property
     def is_complete(self) -> bool:
@@ -97,7 +102,7 @@ class CrawlJob:
             failed=progress_data.get("failed", 0),
         )
         return cls(
-            id=data.get("job_id", ""),
+            job_id=data.get("job_id", ""),
             status=data.get("status", "unknown"),
             progress=progress,
             urls_count=data.get("urls_count", data.get("url_count", 0)),

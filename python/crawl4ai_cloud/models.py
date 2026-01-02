@@ -107,17 +107,22 @@ class CrawlJob:
             failed=progress_data.get("failed", 0),
         )
 
+        job_id = data.get("job_id", "")
+
         # Convert results to CrawlResult objects if present
         results = None
         raw_results = data.get("results")
         if raw_results and convert_results:
             # Import here to avoid circular import at module level
             results = [CrawlResult.from_dict(r) for r in raw_results]
+            # Set job_id on each result for use with download_url()
+            for r in results:
+                r.id = job_id
         elif raw_results:
             results = raw_results
 
         return cls(
-            job_id=data.get("job_id", ""),
+            job_id=job_id,
             status=data.get("status", "unknown"),
             progress=progress,
             urls_count=data.get("urls_count", data.get("url_count", 0)),
@@ -351,6 +356,7 @@ class CrawlResult:
     redirected_url: Optional[str] = None
     llm_usage: Optional[LLMUsage] = None
     crawl_strategy: Optional[str] = None
+    id: Optional[str] = None  # Job ID for async results (use with download_url())
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "CrawlResult":

@@ -97,68 +97,20 @@ type RunManyResult struct {
 }
 
 // RunMany crawls multiple URLs.
+// Creates an async job for processing. Use Wait=true to block until
+// complete, or poll with GetJob()/WaitJob().
 func (c *AsyncWebCrawler) RunMany(urls []string, opts *RunManyOptions) (*RunManyResult, error) {
 	if opts == nil {
 		opts = &RunManyOptions{}
 	}
 
-	if len(urls) <= 10 {
-		return c.runBatch(urls, opts)
-	}
+	// Always use async endpoint for consistent job tracking
 	return c.runAsync(urls, opts)
 }
 
 // ArunMany is an alias for RunMany (OSS compatibility).
 func (c *AsyncWebCrawler) ArunMany(urls []string, opts *RunManyOptions) (*RunManyResult, error) {
 	return c.RunMany(urls, opts)
-}
-
-func (c *AsyncWebCrawler) runBatch(urls []string, opts *RunManyOptions) (*RunManyResult, error) {
-	strategy := opts.Strategy
-	if strategy == "" {
-		strategy = "browser"
-	}
-
-	body := BuildCrawlRequest(map[string]interface{}{
-		"urls":          urls,
-		"config":        opts.Config,
-		"browserConfig": opts.BrowserConfig,
-		"strategy":      strategy,
-		"proxy":         opts.Proxy,
-		"bypassCache":   opts.BypassCache,
-	})
-
-	data, err := c.http.Post("/v1/crawl/batch", body, 600*time.Second)
-	if err != nil {
-		return nil, err
-	}
-
-	results := make([]*CrawlResult, 0)
-	if rawResults, ok := data["results"].([]interface{}); ok {
-		for _, r := range rawResults {
-			if m, ok := r.(map[string]interface{}); ok {
-				results = append(results, CrawlResultFromMap(m))
-			}
-		}
-	}
-
-	if opts.Wait {
-		return &RunManyResult{Results: results}, nil
-	}
-
-	// Wrap in completed job
-	job := &CrawlJob{
-		JobID:     fmt.Sprintf("batch_%d", time.Now().Unix()),
-		Status:    "completed",
-		URLsCount: len(urls),
-		Progress: JobProgress{
-			Total:     len(urls),
-			Completed: len(urls),
-			Failed:    0,
-		},
-		Results: results, // Already []*CrawlResult
-	}
-	return &RunManyResult{Job: job, Results: results}, nil
 }
 
 func (c *AsyncWebCrawler) runAsync(urls []string, opts *RunManyOptions) (*RunManyResult, error) {
@@ -329,6 +281,9 @@ type DeepCrawlOptions struct {
 	Pattern        string
 	Query          string
 	ScoreThreshold *float64
+	// URL filtering shortcuts
+	IncludePatterns []string
+	ExcludePatterns []string
 }
 
 // DeepCrawlResult holds the result of DeepCrawl.
@@ -392,9 +347,24 @@ func (c *AsyncWebCrawler) DeepCrawl(url string, opts *DeepCrawlOptions) (*DeepCr
 	if strategy == "bfs" || strategy == "dfs" || strategy == "best_first" {
 		body["max_depth"] = maxDepth
 		body["max_urls"] = maxURLs
+
+		// Build filters from IncludePatterns/ExcludePatterns or use provided filters
+		effectiveFilters := make(map[string]interface{})
 		if opts.Filters != nil {
-			body["filters"] = opts.Filters
+			for k, v := range opts.Filters {
+				effectiveFilters[k] = v
+			}
 		}
+		if len(opts.IncludePatterns) > 0 {
+			effectiveFilters["include_patterns"] = opts.IncludePatterns
+		}
+		if len(opts.ExcludePatterns) > 0 {
+			effectiveFilters["exclude_patterns"] = opts.ExcludePatterns
+		}
+		if len(effectiveFilters) > 0 {
+			body["filters"] = effectiveFilters
+		}
+
 		if opts.Scorers != nil {
 			body["scorers"] = opts.Scorers
 		}

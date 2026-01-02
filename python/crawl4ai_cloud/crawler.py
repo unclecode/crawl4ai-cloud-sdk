@@ -166,8 +166,8 @@ class AsyncWebCrawler:
         """
         Crawl multiple URLs.
 
-        For ≤10 URLs, uses sync batch endpoint.
-        For >10 URLs, creates an async job.
+        Creates an async job for processing. Use wait=True to block until
+        complete, or poll with get_job()/wait_job().
 
         Args:
             urls: List of URLs to crawl
@@ -179,8 +179,8 @@ class AsyncWebCrawler:
             wait: If True, poll until complete and return results
             poll_interval: Seconds between status polls (default: 2.0)
             timeout: Max seconds to wait (None = no timeout)
-            priority: Job priority 1-10 (default: 5, only for async jobs)
-            webhook_url: URL to notify on completion (only for async jobs)
+            priority: Job priority 1-10 (default: 5)
+            webhook_url: URL to notify on completion
             **kwargs: Additional parameters passed to API
 
         Returns:
@@ -199,20 +199,7 @@ class AsyncWebCrawler:
                 print(f"{r.url}: {r.success}")
             ```
         """
-        # Use batch endpoint for small batches
-        if len(urls) <= 10:
-            return await self._run_batch(
-                urls=urls,
-                config=config,
-                browser_config=browser_config,
-                strategy=strategy,
-                proxy=proxy,
-                bypass_cache=bypass_cache,
-                wait=wait,
-                **kwargs,
-            )
-
-        # Use async endpoint for larger batches
+        # Always use async endpoint for consistent job tracking
         return await self._run_async(
             urls=urls,
             config=config,
@@ -241,46 +228,6 @@ class AsyncWebCrawler:
         It simply calls run_many() with all arguments.
         """
         return await self.run_many(urls, config=config, **kwargs)
-
-    async def _run_batch(
-        self,
-        urls: List[str],
-        config=None,
-        browser_config=None,
-        strategy: str = "browser",
-        proxy=None,
-        bypass_cache: bool = False,
-        wait: bool = False,
-        **kwargs,
-    ) -> Union[CrawlJob, List[CrawlResult]]:
-        """Internal: Batch crawl for ≤10 URLs (sync endpoint)."""
-        body = build_crawl_request(
-            urls=urls,
-            config=config,
-            browser_config=browser_config,
-            strategy=strategy,
-            proxy=proxy,
-            bypass_cache=bypass_cache,
-            **kwargs,
-        )
-
-        data = await self._http.request("POST", "/v1/crawl/batch", json=body, timeout=600)
-
-        # Batch endpoint returns results directly
-        results = [CrawlResult.from_dict(r) for r in data.get("results", [])]
-
-        if wait:
-            return results
-
-        # Wrap in a "completed" job for consistent return type
-        return CrawlJob(
-            job_id="batch_" + str(int(time.time())),
-            status="completed",
-            progress=JobProgress(total=len(urls), completed=len(urls), failed=0),
-            urls_count=len(urls),
-            created_at="",
-            results=results,  # Already List[CrawlResult]
-        )
 
     async def _run_async(
         self,
@@ -527,6 +474,9 @@ class AsyncWebCrawler:
         pattern: str = "*",
         query: Optional[str] = None,
         score_threshold: Optional[float] = None,
+        # URL filtering shortcuts
+        include_patterns: Optional[List[str]] = None,
+        exclude_patterns: Optional[List[str]] = None,
     ) -> Union[DeepCrawlResult, CrawlJob]:
         """
         Deep crawl - discover and crawl URLs from a starting point.
@@ -561,6 +511,8 @@ class AsyncWebCrawler:
             pattern: Glob pattern for URL filtering
             query: BM25 relevance query
             score_threshold: Minimum BM25 score
+            include_patterns: List of URL patterns to include (shortcut for filters)
+            exclude_patterns: List of URL patterns to exclude (shortcut for filters)
 
         Returns:
             - If wait=False: DeepCrawlResult with job_id and discovered URLs
@@ -575,6 +527,14 @@ class AsyncWebCrawler:
                 strategy="bfs",
                 max_depth=2,
                 max_urls=50,
+                wait=True,
+            )
+
+            # With URL filtering
+            results = await crawler.deep_crawl(
+                "https://docs.example.com",
+                include_patterns=["docs", "api"],
+                exclude_patterns=["download", "search"],
                 wait=True,
             )
             ```
@@ -600,8 +560,16 @@ class AsyncWebCrawler:
         if strategy in ("bfs", "dfs", "best_first"):
             body["max_depth"] = max_depth
             body["max_urls"] = max_urls
-            if filters:
-                body["filters"] = filters
+
+            # Build filters from include_patterns/exclude_patterns or use provided filters
+            effective_filters = filters.copy() if filters else {}
+            if include_patterns:
+                effective_filters["include_patterns"] = include_patterns
+            if exclude_patterns:
+                effective_filters["exclude_patterns"] = exclude_patterns
+            if effective_filters:
+                body["filters"] = effective_filters
+
             if scorers:
                 body["scorers"] = scorers
             if scan_only:

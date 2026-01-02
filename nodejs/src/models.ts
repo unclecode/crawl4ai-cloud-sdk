@@ -79,7 +79,12 @@ export function crawlJobFromDict(data: Record<string, unknown>, convertResults: 
   let results: CrawlResult[] | undefined;
   const rawResults = data.results as Record<string, unknown>[] | undefined;
   if (rawResults && convertResults) {
-    results = rawResults.map((r) => crawlResultFromDict(r));
+    results = rawResults.map((r) => {
+      const result = crawlResultFromDict(r);
+      // Set job_id on each result for use with downloadUrl()
+      result.id = jobId;
+      return result;
+    });
   }
 
   return {
@@ -292,6 +297,8 @@ export interface CrawlResult {
   redirectedUrl?: string;
   llmUsage?: LLMUsage;
   crawlStrategy?: string;
+  /** Job ID for async results (use with downloadUrl()) */
+  id?: string;
 }
 
 /**

@@ -81,6 +81,9 @@ export interface DeepCrawlOptions {
   pattern?: string;
   query?: string;
   scoreThreshold?: number;
+  // URL filtering shortcuts
+  includePatterns?: string[];
+  excludePatterns?: string[];
 }
 
 /**
@@ -152,8 +155,8 @@ export class AsyncWebCrawler {
   /**
    * Crawl multiple URLs.
    *
-   * For ≤10 URLs, uses sync batch endpoint.
-   * For >10 URLs, creates an async job.
+   * Creates an async job for processing. Use wait=true to block until
+   * complete, or poll with getJob()/waitJob().
    */
   async runMany(
     urls: string[],
@@ -168,12 +171,7 @@ export class AsyncWebCrawler {
       ...runOptions
     } = options;
 
-    // Use batch endpoint for small batches
-    if (urls.length <= 10) {
-      return this.runBatch(urls, runOptions, wait);
-    }
-
-    // Use async endpoint for larger batches
+    // Always use async endpoint for consistent job tracking
     return this.runAsync(urls, {
       ...runOptions,
       wait,
@@ -192,53 +190,6 @@ export class AsyncWebCrawler {
     options: RunManyOptions = {}
   ): Promise<CrawlJob | CrawlResult[]> {
     return this.runMany(urls, options);
-  }
-
-  private async runBatch(
-    urls: string[],
-    options: RunOptions,
-    wait: boolean
-  ): Promise<CrawlJob | CrawlResult[]> {
-    const {
-      config,
-      browserConfig,
-      strategy = 'browser',
-      proxy,
-      bypassCache = false,
-      ...rest
-    } = options;
-
-    const body = buildCrawlRequest({
-      urls,
-      config,
-      browserConfig,
-      strategy,
-      proxy,
-      bypassCache,
-      ...rest,
-    });
-
-    const data = await this.http.post('/v1/crawl/batch', body, 600000);
-    const results = ((data.results || []) as Record<string, unknown>[]).map(
-      crawlResultFromDict
-    );
-
-    if (wait) {
-      return results;
-    }
-
-    // Wrap in a "completed" job for consistent return type
-    const jobId = `batch_${Date.now()}`;
-    const job: CrawlJob = {
-      jobId,
-      id: jobId,
-      status: 'completed',
-      progress: { total: urls.length, completed: urls.length, failed: 0 },
-      urlsCount: urls.length,
-      createdAt: '',
-      results,  // Already CrawlResult[]
-    };
-    return job;
   }
 
   private async runAsync(
@@ -412,6 +363,8 @@ export class AsyncWebCrawler {
       pattern = '*',
       query,
       scoreThreshold,
+      includePatterns,
+      excludePatterns,
     } = options;
 
     if (!url && !sourceJob) {
@@ -435,7 +388,13 @@ export class AsyncWebCrawler {
     if (['bfs', 'dfs', 'best_first'].includes(strategy)) {
       body.max_depth = maxDepth;
       body.max_urls = maxUrls;
-      if (filters) body.filters = filters;
+
+      // Build filters from includePatterns/excludePatterns or use provided filters
+      const effectiveFilters: Record<string, unknown> = filters ? { ...filters } : {};
+      if (includePatterns) effectiveFilters.include_patterns = includePatterns;
+      if (excludePatterns) effectiveFilters.exclude_patterns = excludePatterns;
+      if (Object.keys(effectiveFilters).length > 0) body.filters = effectiveFilters;
+
       if (scorers) body.scorers = scorers;
       if (scanOnly) body.scan_only = true;
       if (includeHtml) body.include_html = true;

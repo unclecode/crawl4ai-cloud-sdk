@@ -109,7 +109,10 @@ func CrawlJobFromMap(data map[string]interface{}) *CrawlJob {
 		job.Results = make([]*CrawlResult, 0, len(results))
 		for _, r := range results {
 			if m, ok := r.(map[string]interface{}); ok {
-				job.Results = append(job.Results, CrawlResultFromMap(m))
+				result := CrawlResultFromMap(m)
+				// Set job_id on each result for use with DownloadURL()
+				result.ID = job.JobID
+				job.Results = append(job.Results, result)
 			}
 		}
 	}
@@ -145,6 +148,8 @@ type CrawlResult struct {
 	Tables           []interface{}          `json:"tables,omitempty"`
 	RedirectedURL    string                 `json:"redirected_url,omitempty"`
 	CrawlStrategy    string                 `json:"crawl_strategy,omitempty"`
+	// ID is the job ID for async results (use with DownloadURL())
+	ID string `json:"id,omitempty"`
 }
 
 // CrawlResultFromMap creates a CrawlResult from API response map.

@@ -364,8 +364,12 @@ class AsyncWebCrawler:
         """
         Poll until job completes.
 
+        Works with both regular crawl jobs (job_xxx) and deep crawl scan jobs (scan_xxx).
+        For scan jobs, automatically waits for the scan phase, then for the crawl phase
+        if a crawl job was created.
+
         Args:
-            job_id: Job ID to wait for
+            job_id: Job ID to wait for (supports both job_xxx and scan_xxx formats)
             poll_interval: Seconds between polls (default: 2.0)
             timeout: Max seconds to wait (None = no timeout)
             include_results: Include results in final response
@@ -378,6 +382,44 @@ class AsyncWebCrawler:
         """
         start_time = time.time()
 
+        # Handle scan jobs (from deep_crawl with wait=False)
+        if job_id.startswith("scan_"):
+            # Wait for scan phase to complete
+            scan_result = await self._wait_scan_job(
+                job_id,
+                poll_interval=poll_interval,
+                timeout=timeout,
+            )
+
+            # If scan created a crawl job, wait for that too
+            if scan_result.crawl_job_id:
+                remaining_timeout = None
+                if timeout:
+                    elapsed = time.time() - start_time
+                    remaining_timeout = max(0, timeout - elapsed)
+
+                return await self.wait_job(
+                    scan_result.crawl_job_id,
+                    poll_interval=poll_interval,
+                    timeout=remaining_timeout,
+                    include_results=include_results,
+                )
+
+            # Scan only mode (no crawl job) - return CrawlJob-like response
+            return CrawlJob(
+                id=job_id,
+                status=scan_result.status,
+                progress=JobProgress(
+                    total=scan_result.discovered_count,
+                    completed=scan_result.discovered_count,
+                    failed=0,
+                ),
+                urls_count=scan_result.discovered_count,
+                created_at=scan_result.created_at,
+                results=None,
+            )
+
+        # Regular crawl job polling
         while True:
             job = await self.get_job(job_id, include_results=False)
 

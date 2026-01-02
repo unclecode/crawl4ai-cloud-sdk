@@ -68,7 +68,7 @@ class CrawlJob:
     created_at: str
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
-    results: Optional[List[Dict[str, Any]]] = None
+    results: Optional[List["CrawlResult"]] = None
     error: Optional[str] = None
     result_size_bytes: Optional[int] = None
 
@@ -93,14 +93,29 @@ class CrawlJob:
         return self.progress.percent
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "CrawlJob":
-        """Create CrawlJob from API response dict."""
+    def from_dict(cls, data: Dict[str, Any], convert_results: bool = True) -> "CrawlJob":
+        """Create CrawlJob from API response dict.
+
+        Args:
+            data: API response dictionary
+            convert_results: If True, convert results to CrawlResult objects
+        """
         progress_data = data.get("progress", {})
         progress = JobProgress(
             total=progress_data.get("total", 0),
             completed=progress_data.get("completed", 0),
             failed=progress_data.get("failed", 0),
         )
+
+        # Convert results to CrawlResult objects if present
+        results = None
+        raw_results = data.get("results")
+        if raw_results and convert_results:
+            # Import here to avoid circular import at module level
+            results = [CrawlResult.from_dict(r) for r in raw_results]
+        elif raw_results:
+            results = raw_results
+
         return cls(
             job_id=data.get("job_id", ""),
             status=data.get("status", "unknown"),
@@ -109,7 +124,7 @@ class CrawlJob:
             created_at=data.get("created_at", ""),
             started_at=data.get("started_at"),
             completed_at=data.get("completed_at"),
-            results=data.get("results"),
+            results=results,
             error=data.get("error"),
             result_size_bytes=data.get("result_size_bytes"),
         )

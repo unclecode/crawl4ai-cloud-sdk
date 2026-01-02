@@ -279,7 +279,7 @@ class AsyncWebCrawler:
             progress=JobProgress(total=len(urls), completed=len(urls), failed=0),
             urls_count=len(urls),
             created_at="",
-            results=[r.__dict__ for r in results],
+            results=results,  # Already List[CrawlResult]
         )
 
     async def _run_async(
@@ -322,9 +322,8 @@ class AsyncWebCrawler:
                 timeout=timeout,
                 include_results=True,
             )
-            if job.results:
-                return [CrawlResult.from_dict(r) for r in job.results]
-            return []
+            # job.results is already List[CrawlResult] from CrawlJob.from_dict
+            return job.results or []
 
         return job
 

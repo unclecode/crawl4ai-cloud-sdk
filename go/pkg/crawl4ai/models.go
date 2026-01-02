@@ -29,16 +29,16 @@ func (p *JobProgress) Percent() float64 {
 
 // CrawlJob represents an async crawl job.
 type CrawlJob struct {
-	JobID           string                   `json:"job_id"`
-	Status          string                   `json:"status"`
-	Progress        JobProgress              `json:"progress"`
-	URLsCount       int                      `json:"urls_count"`
-	CreatedAt       string                   `json:"created_at"`
-	StartedAt       string                   `json:"started_at,omitempty"`
-	CompletedAt     string                   `json:"completed_at,omitempty"`
-	Results         []map[string]interface{} `json:"results,omitempty"`
-	Error           string                   `json:"error,omitempty"`
-	ResultSizeBytes int                      `json:"result_size_bytes,omitempty"`
+	JobID           string         `json:"job_id"`
+	Status          string         `json:"status"`
+	Progress        JobProgress    `json:"progress"`
+	URLsCount       int            `json:"urls_count"`
+	CreatedAt       string         `json:"created_at"`
+	StartedAt       string         `json:"started_at,omitempty"`
+	CompletedAt     string         `json:"completed_at,omitempty"`
+	Results         []*CrawlResult `json:"results,omitempty"`
+	Error           string         `json:"error,omitempty"`
+	ResultSizeBytes int            `json:"result_size_bytes,omitempty"`
 }
 
 // ID returns the job ID (backward compatibility alias for JobID).
@@ -104,11 +104,12 @@ func CrawlJobFromMap(data map[string]interface{}) *CrawlJob {
 		}
 	}
 
+	// Convert results to CrawlResult objects
 	if results, ok := data["results"].([]interface{}); ok {
-		job.Results = make([]map[string]interface{}, len(results))
-		for i, r := range results {
+		job.Results = make([]*CrawlResult, 0, len(results))
+		for _, r := range results {
 			if m, ok := r.(map[string]interface{}); ok {
-				job.Results[i] = m
+				job.Results = append(job.Results, CrawlResultFromMap(m))
 			}
 		}
 	}

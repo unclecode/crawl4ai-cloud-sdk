@@ -148,7 +148,7 @@ func (c *AsyncWebCrawler) runBatch(urls []string, opts *RunManyOptions) (*RunMan
 
 	// Wrap in completed job
 	job := &CrawlJob{
-		ID:        fmt.Sprintf("batch_%d", time.Now().Unix()),
+		JobID:     fmt.Sprintf("batch_%d", time.Now().Unix()),
 		Status:    "completed",
 		URLsCount: len(urls),
 		Progress: JobProgress{
@@ -156,6 +156,7 @@ func (c *AsyncWebCrawler) runBatch(urls []string, opts *RunManyOptions) (*RunMan
 			Completed: len(urls),
 			Failed:    0,
 		},
+		Results: results, // Already []*CrawlResult
 	}
 	return &RunManyResult{Job: job, Results: results}, nil
 }
@@ -200,14 +201,8 @@ func (c *AsyncWebCrawler) runAsync(urls []string, opts *RunManyOptions) (*RunMan
 			return nil, err
 		}
 
-		if job.Results != nil {
-			results := make([]*CrawlResult, len(job.Results))
-			for i, r := range job.Results {
-				results[i] = CrawlResultFromMap(r)
-			}
-			return &RunManyResult{Job: job, Results: results}, nil
-		}
-		return &RunManyResult{Job: job}, nil
+		// job.Results is already []*CrawlResult from CrawlJobFromMap
+		return &RunManyResult{Job: job, Results: job.Results}, nil
 	}
 
 	return &RunManyResult{Job: job}, nil

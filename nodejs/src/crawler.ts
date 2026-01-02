@@ -228,13 +228,15 @@ export class AsyncWebCrawler {
     }
 
     // Wrap in a "completed" job for consistent return type
+    const jobId = `batch_${Date.now()}`;
     const job: CrawlJob = {
-      id: `batch_${Date.now()}`,
+      jobId,
+      id: jobId,
       status: 'completed',
       progress: { total: urls.length, completed: urls.length, failed: 0 },
       urlsCount: urls.length,
       createdAt: '',
-      results: data.results as Record<string, unknown>[],
+      results,  // Already CrawlResult[]
     };
     return job;
   }
@@ -281,10 +283,8 @@ export class AsyncWebCrawler {
         timeout,
         includeResults: true,
       });
-      if (job.results) {
-        return job.results.map(crawlResultFromDict);
-      }
-      return [];
+      // job.results is already CrawlResult[] from crawlJobFromDict
+      return job.results || [];
     }
 
     return job;
@@ -357,7 +357,7 @@ export class AsyncWebCrawler {
     }
 
     const data = await this.http.get('/v1/crawl/jobs', params);
-    return ((data.jobs || []) as Record<string, unknown>[]).map(crawlJobFromDict);
+    return ((data.jobs || []) as Record<string, unknown>[]).map((job) => crawlJobFromDict(job));
   }
 
   /**

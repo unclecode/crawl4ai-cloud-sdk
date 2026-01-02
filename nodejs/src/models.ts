@@ -48,7 +48,7 @@ export interface CrawlJob {
   createdAt: string;
   startedAt?: string;
   completedAt?: string;
-  results?: Record<string, unknown>[];
+  results?: CrawlResult[];
   error?: string;
   resultSizeBytes?: number;
 }
@@ -69,10 +69,19 @@ export function isJobSuccessful(job: CrawlJob): boolean {
 
 /**
  * Create CrawlJob from API response.
+ * Results are automatically converted to CrawlResult objects.
  */
-export function crawlJobFromDict(data: Record<string, unknown>): CrawlJob {
+export function crawlJobFromDict(data: Record<string, unknown>, convertResults: boolean = true): CrawlJob {
   const progressData = (data.progress || {}) as Record<string, unknown>;
   const jobId = (data.job_id || '') as string;
+
+  // Convert results to CrawlResult objects if present
+  let results: CrawlResult[] | undefined;
+  const rawResults = data.results as Record<string, unknown>[] | undefined;
+  if (rawResults && convertResults) {
+    results = rawResults.map((r) => crawlResultFromDict(r));
+  }
+
   return {
     jobId,
     id: jobId, // backward compatibility alias
@@ -86,7 +95,7 @@ export function crawlJobFromDict(data: Record<string, unknown>): CrawlJob {
     createdAt: (data.created_at || '') as string,
     startedAt: data.started_at as string | undefined,
     completedAt: data.completed_at as string | undefined,
-    results: data.results as Record<string, unknown>[] | undefined,
+    results,
     error: data.error as string | undefined,
     resultSizeBytes: data.result_size_bytes as number | undefined,
   };

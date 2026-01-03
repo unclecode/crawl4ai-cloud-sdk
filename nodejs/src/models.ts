@@ -51,6 +51,8 @@ export interface CrawlJob {
   results?: CrawlResult[];
   error?: string;
   resultSizeBytes?: number;
+  /** Resource usage metrics (completed jobs only) */
+  usage?: Usage;
 }
 
 /**
@@ -103,6 +105,7 @@ export function crawlJobFromDict(data: Record<string, unknown>, convertResults: 
     results,
     error: data.error as string | undefined,
     resultSizeBytes: data.result_size_bytes as number | undefined,
+    usage: data.usage ? usageFromDict(data.usage as Record<string, unknown>) : undefined,
   };
 }
 
@@ -200,12 +203,110 @@ export function contextResultFromDict(data: Record<string, unknown>): ContextRes
 }
 
 /**
- * LLM token usage.
+ * LLM token usage (per-request).
  */
 export interface LLMUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+}
+
+/**
+ * Crawl usage metrics returned in API responses.
+ */
+export interface CrawlUsageMetrics {
+  creditsUsed: number;
+  creditsRemaining: number;
+  durationMs: number;
+  cached: boolean | number; // bool for single, number for batch (cache hit count)
+  urlsTotal?: number;
+  urlsSucceeded?: number;
+  urlsFailed?: number;
+}
+
+/**
+ * LLM usage metrics returned in API responses.
+ */
+export interface LLMUsageMetrics {
+  tokensUsed: number;
+  tokensRemaining: number;
+  model?: string;
+}
+
+/**
+ * Storage usage metrics returned in API responses (async jobs only).
+ */
+export interface StorageUsageMetrics {
+  bytesUsed: number;
+  bytesRemaining: number;
+}
+
+/**
+ * Unified usage metrics returned in API responses.
+ */
+export interface Usage {
+  crawl: CrawlUsageMetrics;
+  llm?: LLMUsageMetrics;
+  storage?: StorageUsageMetrics;
+}
+
+/**
+ * Create CrawlUsageMetrics from API response.
+ */
+export function crawlUsageMetricsFromDict(data: Record<string, unknown>): CrawlUsageMetrics {
+  return {
+    creditsUsed: (data.credits_used || 0) as number,
+    creditsRemaining: (data.credits_remaining || 0) as number,
+    durationMs: (data.duration_ms || 0) as number,
+    cached: data.cached as boolean | number,
+    urlsTotal: data.urls_total as number | undefined,
+    urlsSucceeded: data.urls_succeeded as number | undefined,
+    urlsFailed: data.urls_failed as number | undefined,
+  };
+}
+
+/**
+ * Create LLMUsageMetrics from API response.
+ */
+export function llmUsageMetricsFromDict(data: Record<string, unknown>): LLMUsageMetrics {
+  return {
+    tokensUsed: (data.tokens_used || 0) as number,
+    tokensRemaining: (data.tokens_remaining || 0) as number,
+    model: data.model as string | undefined,
+  };
+}
+
+/**
+ * Create StorageUsageMetrics from API response.
+ */
+export function storageUsageMetricsFromDict(data: Record<string, unknown>): StorageUsageMetrics {
+  return {
+    bytesUsed: (data.bytes_used || 0) as number,
+    bytesRemaining: (data.bytes_remaining || 0) as number,
+  };
+}
+
+/**
+ * Create Usage from API response.
+ */
+export function usageFromDict(data: Record<string, unknown>): Usage {
+  const crawlData = (data.crawl || {}) as Record<string, unknown>;
+
+  let llm: LLMUsageMetrics | undefined;
+  if (data.llm) {
+    llm = llmUsageMetricsFromDict(data.llm as Record<string, unknown>);
+  }
+
+  let storage: StorageUsageMetrics | undefined;
+  if (data.storage) {
+    storage = storageUsageMetricsFromDict(data.storage as Record<string, unknown>);
+  }
+
+  return {
+    crawl: crawlUsageMetricsFromDict(crawlData),
+    llm,
+    storage,
+  };
 }
 
 /**
@@ -299,6 +400,8 @@ export interface CrawlResult {
   crawlStrategy?: string;
   /** Job ID for async results (use with downloadUrl()) */
   id?: string;
+  /** Resource usage metrics */
+  usage?: Usage;
 }
 
 /**
@@ -348,5 +451,6 @@ export function crawlResultFromDict(data: Record<string, unknown>): CrawlResult 
     redirectedUrl: data.redirected_url as string | undefined,
     llmUsage,
     crawlStrategy: data.crawl_strategy as string | undefined,
+    usage: data.usage ? usageFromDict(data.usage as Record<string, unknown>) : undefined,
   };
 }

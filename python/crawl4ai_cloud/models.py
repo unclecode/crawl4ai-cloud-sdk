@@ -71,6 +71,7 @@ class CrawlJob:
     results: Optional[List["CrawlResult"]] = None
     error: Optional[str] = None
     result_size_bytes: Optional[int] = None
+    usage: Optional["Usage"] = None  # Resource usage metrics (completed jobs only)
 
     @property
     def id(self) -> str:
@@ -121,6 +122,11 @@ class CrawlJob:
         elif raw_results:
             results = raw_results
 
+        # Parse usage if present
+        usage = None
+        if data.get("usage"):
+            usage = Usage.from_dict(data["usage"])
+
         return cls(
             job_id=job_id,
             status=data.get("status", "unknown"),
@@ -132,6 +138,7 @@ class CrawlJob:
             results=results,
             error=data.get("error"),
             result_size_bytes=data.get("result_size_bytes"),
+            usage=usage,
         )
 
 
@@ -245,10 +252,99 @@ class ContextResult:
 
 @dataclass
 class LLMUsage:
-    """LLM token usage for managed service."""
+    """LLM token usage for managed service (per-request)."""
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+
+
+@dataclass
+class CrawlUsageMetrics:
+    """Crawl resource usage metrics returned in API responses."""
+    credits_used: float = 0.0
+    credits_remaining: float = 0.0
+    duration_ms: int = 0
+    cached: bool = False  # bool for single, but API may return int for batch
+    urls_total: Optional[int] = None
+    urls_succeeded: Optional[int] = None
+    urls_failed: Optional[int] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "CrawlUsageMetrics":
+        """Create from API response dict."""
+        return cls(
+            credits_used=data.get("credits_used", 0.0),
+            credits_remaining=data.get("credits_remaining", 0.0),
+            duration_ms=data.get("duration_ms", 0),
+            cached=bool(data.get("cached", False)),
+            urls_total=data.get("urls_total"),
+            urls_succeeded=data.get("urls_succeeded"),
+            urls_failed=data.get("urls_failed"),
+        )
+
+
+@dataclass
+class LLMUsageMetrics:
+    """LLM usage metrics returned in API responses."""
+    tokens_used: int = 0
+    tokens_remaining: int = 0
+    model: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "LLMUsageMetrics":
+        """Create from API response dict."""
+        return cls(
+            tokens_used=data.get("tokens_used", 0),
+            tokens_remaining=data.get("tokens_remaining", 0),
+            model=data.get("model"),
+        )
+
+
+@dataclass
+class StorageUsageMetrics:
+    """Storage usage metrics returned in API responses (async jobs only)."""
+    bytes_used: int = 0
+    bytes_remaining: int = 0
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "StorageUsageMetrics":
+        """Create from API response dict."""
+        return cls(
+            bytes_used=data.get("bytes_used", 0),
+            bytes_remaining=data.get("bytes_remaining", 0),
+        )
+
+
+@dataclass
+class Usage:
+    """
+    Unified usage metrics returned in API responses.
+
+    Shows resource consumption and remaining quotas after each request.
+
+    Attributes:
+        crawl: Crawl credits used and remaining
+        llm: LLM tokens used and remaining (only if LLM extraction was used)
+        storage: Storage bytes used and remaining (async jobs only)
+    """
+    crawl: CrawlUsageMetrics
+    llm: Optional[LLMUsageMetrics] = None
+    storage: Optional[StorageUsageMetrics] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Usage":
+        """Create from API response dict."""
+        crawl = CrawlUsageMetrics.from_dict(data.get("crawl", {}))
+
+        llm = None
+        if data.get("llm"):
+            llm = LLMUsageMetrics.from_dict(data["llm"])
+
+        storage = None
+        if data.get("storage"):
+            storage = StorageUsageMetrics.from_dict(data["storage"])
+
+        return cls(crawl=crawl, llm=llm, storage=storage)
 
 
 @dataclass
@@ -357,6 +453,7 @@ class CrawlResult:
     llm_usage: Optional[LLMUsage] = None
     crawl_strategy: Optional[str] = None
     id: Optional[str] = None  # Job ID for async results (use with download_url())
+    usage: Optional[Usage] = None  # Resource usage metrics
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "CrawlResult":
@@ -401,4 +498,5 @@ class CrawlResult:
             redirected_url=data.get("redirected_url"),
             llm_usage=llm_usage,
             crawl_strategy=data.get("crawl_strategy"),
+            usage=Usage.from_dict(data["usage"]) if data.get("usage") else None,
         )

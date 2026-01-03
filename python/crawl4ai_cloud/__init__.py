@@ -11,7 +11,7 @@ Example:
     ```
 """
 
-__version__ = "0.1.4"
+__version__ = "0.1.5"
 
 # Main crawler class
 from .crawler import AsyncWebCrawler
@@ -39,6 +39,11 @@ from .models import (
     StorageUsage,
     ProxyConfig,
     LLMUsage,
+    # Usage metrics
+    Usage,
+    CrawlUsageMetrics,
+    LLMUsageMetrics,
+    StorageUsageMetrics,
 )
 
 # Errors
@@ -77,6 +82,10 @@ __all__ = [
     "StorageUsage",
     "ProxyConfig",
     "LLMUsage",
+    "Usage",
+    "CrawlUsageMetrics",
+    "LLMUsageMetrics",
+    "StorageUsageMetrics",
     # Errors
     "CloudError",
     "AuthenticationError",

@@ -39,6 +39,8 @@ type CrawlJob struct {
 	Results         []*CrawlResult `json:"results,omitempty"`
 	Error           string         `json:"error,omitempty"`
 	ResultSizeBytes int            `json:"result_size_bytes,omitempty"`
+	// Usage contains resource usage metrics (completed jobs only)
+	Usage *Usage `json:"usage,omitempty"`
 }
 
 // ID returns the job ID (backward compatibility alias for JobID).
@@ -117,6 +119,11 @@ func CrawlJobFromMap(data map[string]interface{}) *CrawlJob {
 		}
 	}
 
+	// Parse usage if present
+	if usage, ok := data["usage"].(map[string]interface{}); ok {
+		job.Usage = UsageFromMap(usage)
+	}
+
 	return job
 }
 
@@ -150,6 +157,8 @@ type CrawlResult struct {
 	CrawlStrategy    string                 `json:"crawl_strategy,omitempty"`
 	// ID is the job ID for async results (use with DownloadURL())
 	ID string `json:"id,omitempty"`
+	// Usage contains resource usage metrics
+	Usage *Usage `json:"usage,omitempty"`
 }
 
 // CrawlResultFromMap creates a CrawlResult from API response map.
@@ -224,6 +233,10 @@ func CrawlResultFromMap(data map[string]interface{}) *CrawlResult {
 		}
 	}
 
+	if usage, ok := data["usage"].(map[string]interface{}); ok {
+		result.Usage = UsageFromMap(usage)
+	}
+
 	return result
 }
 
@@ -280,12 +293,98 @@ func DeepCrawlResultFromMap(data map[string]interface{}) *DeepCrawlResult {
 	return result
 }
 
-// StorageUsage represents storage quota usage.
+// StorageUsage represents storage quota usage (from /storage endpoint).
 type StorageUsage struct {
 	UsedMB      float64 `json:"used_mb"`
 	MaxMB       float64 `json:"max_mb"`
 	RemainingMB float64 `json:"remaining_mb"`
 	PercentUsed float64 `json:"percent_used"`
+}
+
+// CrawlUsageMetrics represents crawl usage metrics in API responses.
+type CrawlUsageMetrics struct {
+	CreditsUsed      float64 `json:"credits_used"`
+	CreditsRemaining float64 `json:"credits_remaining"`
+	DurationMs       int     `json:"duration_ms"`
+	Cached           bool    `json:"cached"` // bool for single crawl, may be int for batch
+	URLsTotal        int     `json:"urls_total,omitempty"`
+	URLsSucceeded    int     `json:"urls_succeeded,omitempty"`
+	URLsFailed       int     `json:"urls_failed,omitempty"`
+}
+
+// LLMUsageMetrics represents LLM usage metrics in API responses.
+type LLMUsageMetrics struct {
+	TokensUsed      int    `json:"tokens_used"`
+	TokensRemaining int    `json:"tokens_remaining"`
+	Model           string `json:"model,omitempty"`
+}
+
+// StorageUsageMetrics represents storage metrics in API responses (async jobs only).
+type StorageUsageMetrics struct {
+	BytesUsed      int `json:"bytes_used"`
+	BytesRemaining int `json:"bytes_remaining"`
+}
+
+// Usage represents unified usage metrics returned in API responses.
+type Usage struct {
+	Crawl   *CrawlUsageMetrics   `json:"crawl"`
+	LLM     *LLMUsageMetrics     `json:"llm,omitempty"`
+	Storage *StorageUsageMetrics `json:"storage,omitempty"`
+}
+
+// UsageFromMap creates a Usage from API response map.
+func UsageFromMap(data map[string]interface{}) *Usage {
+	usage := &Usage{}
+
+	if crawl, ok := data["crawl"].(map[string]interface{}); ok {
+		usage.Crawl = &CrawlUsageMetrics{}
+		if v, ok := crawl["credits_used"].(float64); ok {
+			usage.Crawl.CreditsUsed = v
+		}
+		if v, ok := crawl["credits_remaining"].(float64); ok {
+			usage.Crawl.CreditsRemaining = v
+		}
+		if v, ok := crawl["duration_ms"].(float64); ok {
+			usage.Crawl.DurationMs = int(v)
+		}
+		if v, ok := crawl["cached"].(bool); ok {
+			usage.Crawl.Cached = v
+		}
+		if v, ok := crawl["urls_total"].(float64); ok {
+			usage.Crawl.URLsTotal = int(v)
+		}
+		if v, ok := crawl["urls_succeeded"].(float64); ok {
+			usage.Crawl.URLsSucceeded = int(v)
+		}
+		if v, ok := crawl["urls_failed"].(float64); ok {
+			usage.Crawl.URLsFailed = int(v)
+		}
+	}
+
+	if llm, ok := data["llm"].(map[string]interface{}); ok {
+		usage.LLM = &LLMUsageMetrics{}
+		if v, ok := llm["tokens_used"].(float64); ok {
+			usage.LLM.TokensUsed = int(v)
+		}
+		if v, ok := llm["tokens_remaining"].(float64); ok {
+			usage.LLM.TokensRemaining = int(v)
+		}
+		if v, ok := llm["model"].(string); ok {
+			usage.LLM.Model = v
+		}
+	}
+
+	if storage, ok := data["storage"].(map[string]interface{}); ok {
+		usage.Storage = &StorageUsageMetrics{}
+		if v, ok := storage["bytes_used"].(float64); ok {
+			usage.Storage.BytesUsed = int(v)
+		}
+		if v, ok := storage["bytes_remaining"].(float64); ok {
+			usage.Storage.BytesRemaining = int(v)
+		}
+	}
+
+	return usage
 }
 
 // StorageUsageFromMap creates a StorageUsage from API response map.

@@ -12,7 +12,7 @@
  * ```
  */
 
-export const VERSION = '0.1.0';
+export const VERSION = '0.1.1';
 
 // Main crawler class
 export { AsyncWebCrawler } from './crawler';
@@ -45,6 +45,11 @@ export type {
   StorageUsage,
   ProxyConfig,
   LLMUsage,
+  // Usage metrics
+  Usage,
+  CrawlUsageMetrics,
+  LLMUsageMetrics,
+  StorageUsageMetrics,
 } from './models';
 
 export {
@@ -59,6 +64,11 @@ export {
   isDeepCrawlComplete,
   getProgressPending,
   getProgressPercent,
+  // Usage helpers
+  usageFromDict,
+  crawlUsageMetricsFromDict,
+  llmUsageMetricsFromDict,
+  storageUsageMetricsFromDict,
 } from './models';
 
 // Errors

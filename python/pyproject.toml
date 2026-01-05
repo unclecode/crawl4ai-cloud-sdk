@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "crawl4ai-cloud"
-version = "0.1.4"
+version = "0.1.5"
 description = "Lightweight cloud SDK for Crawl4AI - mirrors the OSS API"
 readme = "README.md"
 requires-python = ">=3.9"

@@ -1,6 +1,6 @@
 {
   "name": "crawl4ai-cloud",
-  "version": "0.1.2",
+  "version": "0.1.5",
   "description": "Lightweight cloud SDK for Crawl4AI - mirrors the OSS API",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

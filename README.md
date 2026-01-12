@@ -33,6 +33,15 @@
 
 ---
 
+<div align="center">
+  <a href="https://www.youtube.com/watch?v=CJjpcIhxYXo">
+    <img src="https://img.youtube.com/vi/CJjpcIhxYXo/hqdefault.jpg" alt="Crawl4AI Cloud Introduction" width="500"/>
+  </a>
+  <p><em>Watch: Bringing Open Source to the Cloud</em></p>
+</div>
+
+---
+
 ## Hey, Beautiful People!
 
 This is **Uncle Code**.

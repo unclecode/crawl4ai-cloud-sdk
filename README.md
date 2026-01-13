@@ -24,7 +24,7 @@
 </p>
 
 <p align="center">
-  <a href="https://api.crawl4ai.com/register?code=CRAWL4AI-BETA-2026">
+  <a href="https://forms.gle/E9MyPaNXACnAMaqG7">
     <img src="https://img.shields.io/badge/Join%20the%20Beta-Get%20Started-00D4AA?style=for-the-badge" alt="Join Beta" />
   </a>
 </p>
@@ -93,7 +93,7 @@ I am a developer, and I love to build.
 | **Report a Bug** | [Open an Issue](https://github.com/unclecode/crawl4ai-cloud-sdk/issues/new?labels=bug) |
 | **Request a Feature** | [Open an Issue](https://github.com/unclecode/crawl4ai-cloud-sdk/issues/new?labels=enhancement) |
 | **Ask Questions** | [Join Discord](https://discord.gg/jP8KfhDhyN) |
-| **Share Feedback** | [Start a Discussion](https://github.com/unclecode/crawl4ai-cloud-sdk/discussions) |
+| **Share Feedback** | [Join Discord](https://discord.gg/jP8KfhDhyN) |
 
 Every bug report, every feature request, every piece of feedback — it all makes this better.
 
@@ -104,12 +104,12 @@ Every bug report, every feature request, every piece of feedback — it all make
 ### 1. Join the Beta
 
 <p align="center">
-  <a href="https://api.crawl4ai.com/register?code=CRAWL4AI-BETA-2026">
-    <strong>api.crawl4ai.com</strong>
+  <a href="https://forms.gle/E9MyPaNXACnAMaqG7">
+    <strong>Join the Waitlist</strong>
   </a>
 </p>
 
-Sign up, get your API key (`sk_live_...`), and start crawling.
+Sign up for early access, get your API key (`sk_live_...`), and start crawling.
 
 ### 2. Install the SDK
 

@@ -10,7 +10,11 @@ Lightweight Python SDK for [Crawl4AI Cloud](https://api.crawl4ai.com). Mirrors t
 ## Installation
 
 ```bash
+# From PyPI (coming soon)
 pip install crawl4ai-cloud
+
+# From GitHub (available now)
+pip install git+https://github.com/unclecode/crawl4ai-cloud-sdk.git#subdirectory=python
 ```
 
 ## Get Your API Key

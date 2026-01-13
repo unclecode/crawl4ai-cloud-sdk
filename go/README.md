@@ -9,7 +9,8 @@ Lightweight Go SDK for [Crawl4AI Cloud](https://api.crawl4ai.com). Idiomatic Go 
 ## Installation
 
 ```bash
-go get github.com/unclecode/crawl4ai-cloud-sdk/go
+# From GitHub (Go modules fetch directly from repo)
+go get github.com/unclecode/crawl4ai-cloud-sdk/go@v0.2.0
 ```
 
 ## Get Your API Key

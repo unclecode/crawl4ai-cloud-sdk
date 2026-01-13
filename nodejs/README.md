@@ -9,11 +9,7 @@ Lightweight Node.js/TypeScript SDK for [Crawl4AI Cloud](https://api.crawl4ai.com
 ## Installation
 
 ```bash
-# From npm (coming soon)
 npm install crawl4ai-cloud
-
-# From GitHub (available now)
-npm install github:unclecode/crawl4ai-cloud-sdk#main
 ```
 
 ## Get Your API Key

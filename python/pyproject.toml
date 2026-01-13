@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "crawl4ai-cloud"
-version = "0.1.5"
+version = "0.2.0"
 description = "Lightweight cloud SDK for Crawl4AI - mirrors the OSS API"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -12,18 +12,39 @@ license = "Apache-2.0"
 authors = [
     {name = "Unclecode", email = "unclecode@kidocode.com"}
 ]
+keywords = [
+    "crawl4ai",
+    "web-scraping",
+    "crawler",
+    "cloud",
+    "api",
+    "web-crawler",
+    "scraping",
+    "markdown",
+]
 dependencies = [
     "httpx>=0.27.0",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Software Development :: Libraries :: Python Modules",
 ]
+
+[project.urls]
+Homepage = "https://api.crawl4ai.com"
+Documentation = "https://api.crawl4ai.com/docs"
+Repository = "https://github.com/unclecode/crawl4ai-cloud-sdk"
+Issues = "https://github.com/unclecode/crawl4ai-cloud-sdk/issues"
+Discord = "https://discord.gg/jP8KfhDhyN"
 
 [project.optional-dependencies]
 dev = [

@@ -1,13 +1,15 @@
 # Crawl4AI Cloud SDK for Go
 
-Lightweight Go SDK for [Crawl4AI Cloud API](https://api.crawl4ai.com). Idiomatic Go implementation.
+Lightweight Go SDK for [Crawl4AI Cloud](https://api.crawl4ai.com). Idiomatic Go implementation.
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/unclecode/crawl4ai-cloud/go.svg)](https://pkg.go.dev/github.com/unclecode/crawl4ai-cloud/go)
+> **Note:** This SDK is for **Crawl4AI Cloud** (api.crawl4ai.com), the managed cloud service. For the self-hosted open-source version, see [github.com/unclecode/crawl4ai](https://github.com/unclecode/crawl4ai).
+
+[![Go Reference](https://pkg.go.dev/badge/github.com/unclecode/crawl4ai-cloud-sdk/go.svg)](https://pkg.go.dev/github.com/unclecode/crawl4ai-cloud-sdk/go)
 
 ## Installation
 
 ```bash
-go get github.com/unclecode/crawl4ai-cloud/go
+go get github.com/unclecode/crawl4ai-cloud-sdk/go
 ```
 
 ## Get Your API Key
@@ -22,7 +24,7 @@ package main
 
 import (
     "fmt"
-    "github.com/unclecode/crawl4ai-cloud/go/pkg/crawl4ai"
+    "github.com/unclecode/crawl4ai-cloud-sdk/go/pkg/crawl4ai"
 )
 
 func main() {
@@ -171,7 +173,7 @@ crawler, err := crawl4ai.NewAsyncWebCrawler(crawl4ai.CrawlerOptions{})
 ## Error Handling
 
 ```go
-import "github.com/unclecode/crawl4ai-cloud/go/pkg/crawl4ai"
+import "github.com/unclecode/crawl4ai-cloud-sdk/go/pkg/crawl4ai"
 
 result, err := crawler.Run(url, nil)
 if err != nil {
@@ -212,8 +214,8 @@ type DeepCrawlOptions struct { ... }
 
 ## Links
 
-- [Cloud API](https://api.crawl4ai.com) - Get your API key
-- [Documentation](https://docs.crawl4ai.com)
+- [Cloud Dashboard](https://api.crawl4ai.com) - Sign up & get your API key
+- [Cloud API Docs](https://api.crawl4ai.com/docs) - Full API reference
 - [OSS Repository](https://github.com/unclecode/crawl4ai) - Self-hosted option
 - [Discord](https://discord.gg/jP8KfhDhyN) - Community & support
 

@@ -1,6 +1,6 @@
 {
   "name": "crawl4ai-cloud",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "description": "Lightweight cloud SDK for Crawl4AI - mirrors the OSS API",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -9,9 +9,35 @@
     "test": "jest",
     "prepublishOnly": "npm run build"
   },
-  "keywords": ["crawl4ai", "web-scraping", "crawler", "cloud"],
+  "keywords": [
+    "crawl4ai",
+    "web-scraping",
+    "crawler",
+    "cloud",
+    "api",
+    "web-crawler",
+    "scraping",
+    "markdown"
+  ],
   "author": "Unclecode <unclecode@kidocode.com>",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/unclecode/crawl4ai-cloud-sdk.git",
+    "directory": "nodejs"
+  },
+  "homepage": "https://api.crawl4ai.com",
+  "bugs": {
+    "url": "https://github.com/unclecode/crawl4ai-cloud-sdk/issues"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "dependencies": {
     "node-fetch": "^2.7.0"
   },

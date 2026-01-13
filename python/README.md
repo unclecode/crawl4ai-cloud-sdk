@@ -1,6 +1,8 @@
 # Crawl4AI Cloud SDK for Python
 
-Lightweight Python SDK for [Crawl4AI Cloud API](https://api.crawl4ai.com). Mirrors the OSS API exactly.
+Lightweight Python SDK for [Crawl4AI Cloud](https://api.crawl4ai.com). Mirrors the OSS API exactly.
+
+> **Note:** This SDK is for **Crawl4AI Cloud** (api.crawl4ai.com), the managed cloud service. For the self-hosted open-source version, see [github.com/unclecode/crawl4ai](https://github.com/unclecode/crawl4ai).
 
 [![PyPI version](https://badge.fury.io/py/crawl4ai-cloud.svg)](https://badge.fury.io/py/crawl4ai-cloud)
 [![Python Version](https://img.shields.io/pypi/pyversions/crawl4ai-cloud)](https://pypi.org/project/crawl4ai-cloud/)
@@ -8,11 +10,7 @@ Lightweight Python SDK for [Crawl4AI Cloud API](https://api.crawl4ai.com). Mirro
 ## Installation
 
 ```bash
-# From PyPI (coming soon)
 pip install crawl4ai-cloud
-
-# From repository
-pip install git+https://github.com/unclecode/crawl4ai-cloud-sdk.git#subdirectory=python
 ```
 
 ## Get Your API Key
@@ -175,8 +173,8 @@ except QuotaExceededError:
 
 ## Links
 
-- [Cloud API](https://api.crawl4ai.com) - Get your API key
-- [Documentation](https://docs.crawl4ai.com)
+- [Cloud Dashboard](https://api.crawl4ai.com) - Sign up & get your API key
+- [Cloud API Docs](https://api.crawl4ai.com/docs) - Full API reference
 - [OSS Repository](https://github.com/unclecode/crawl4ai) - Self-hosted option
 - [Discord](https://discord.gg/jP8KfhDhyN) - Community & support
 

@@ -1,3 +1,3 @@
-module github.com/unclecode/crawl4ai-cloud/go
+module github.com/unclecode/crawl4ai-cloud-sdk/go
 
 go 1.21

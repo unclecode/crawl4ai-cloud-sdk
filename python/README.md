@@ -4,17 +4,13 @@ Lightweight Python SDK for [Crawl4AI Cloud](https://api.crawl4ai.com). Mirrors t
 
 > **Note:** This SDK is for **Crawl4AI Cloud** (api.crawl4ai.com), the managed cloud service. For the self-hosted open-source version, see [github.com/unclecode/crawl4ai](https://github.com/unclecode/crawl4ai).
 
-[![PyPI version](https://badge.fury.io/py/crawl4ai-cloud.svg)](https://badge.fury.io/py/crawl4ai-cloud)
-[![Python Version](https://img.shields.io/pypi/pyversions/crawl4ai-cloud)](https://pypi.org/project/crawl4ai-cloud/)
+[![PyPI version](https://badge.fury.io/py/crawl4ai-cloud-sdk.svg)](https://badge.fury.io/py/crawl4ai-cloud-sdk)
+[![Python Version](https://img.shields.io/pypi/pyversions/crawl4ai-cloud-sdk)](https://pypi.org/project/crawl4ai-cloud-sdk/)
 
 ## Installation
 
 ```bash
-# From PyPI (coming soon)
-pip install crawl4ai-cloud
-
-# From GitHub (available now)
-pip install git+https://github.com/unclecode/crawl4ai-cloud-sdk.git#subdirectory=python
+pip install crawl4ai-cloud-sdk
 ```
 
 ## Get Your API Key

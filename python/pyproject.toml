@@ -3,7 +3,7 @@ requires = ["setuptools>=64.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "crawl4ai-cloud"
+name = "crawl4ai-cloud-sdk"
 version = "0.2.0"
 description = "Lightweight cloud SDK for Crawl4AI - mirrors the OSS API"
 readme = "README.md"

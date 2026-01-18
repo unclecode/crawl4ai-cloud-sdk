@@ -114,10 +114,8 @@ Sign up for early access, get your API key (`sk_live_...`), and start crawling.
 ### 2. Install the SDK
 
 ```bash
-# Python (PyPI coming soon)
-pip install crawl4ai-cloud
-# or from GitHub (available now)
-pip install git+https://github.com/unclecode/crawl4ai-cloud-sdk.git#subdirectory=python
+# Python
+pip install crawl4ai-cloud-sdk
 
 # Node.js
 npm install crawl4ai-cloud

@@ -24,6 +24,7 @@ from .configs import (
     sanitize_crawler_config,
     sanitize_browser_config,
     normalize_proxy,
+    normalize_url,
 )
 
 # Response models
@@ -70,6 +71,7 @@ __all__ = [
     "sanitize_crawler_config",
     "sanitize_browser_config",
     "normalize_proxy",
+    "normalize_url",
     # Models
     "CrawlResult",
     "CrawlJob",

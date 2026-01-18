@@ -1,10 +1,141 @@
 """Configuration classes and sanitization for Crawl4AI Cloud SDK."""
+import logging
+import re
 import warnings
 from dataclasses import dataclass, field, asdict
-from typing import Dict, Any, Optional, Union, List
+from typing import Dict, Any, Optional, Union, List, Tuple
+from urllib.parse import urlparse, urlunparse
 
 from .models import ProxyConfig
 
+logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# URL Normalization
+# =============================================================================
+
+# Valid schemes we accept
+VALID_SCHEMES = {"http", "https"}
+
+# Schemes we explicitly reject with clear error messages
+INVALID_SCHEMES = {"javascript", "data", "ftp", "file", "mailto", "tel"}
+
+# Patterns that indicate a URL needs https:// prefix
+NEEDS_SCHEME_PATTERN = re.compile(
+    r'^(?:www\.|[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}(?:[:/]|$)'
+)
+
+# localhost and IP patterns (should use http by default)
+LOCALHOST_PATTERN = re.compile(r'^localhost(?::\d+)?(?:/|$)', re.IGNORECASE)
+IP_PATTERN = re.compile(r'^(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?(?:/|$)')
+
+
+def normalize_url(url: str) -> Tuple[str, bool]:
+    """
+    Normalize a URL and return (normalized_url, was_modified).
+
+    Handles common cases:
+    - www.example.com → https://www.example.com
+    - example.com → https://example.com
+    - //example.com → https://example.com
+    - localhost:3000 → http://localhost:3000
+    - 192.168.1.1 → http://192.168.1.1
+    - HTTP://EXAMPLE.COM → http://example.com (lowercase)
+    - https://example.com:443 → https://example.com (remove default port)
+    - https://example.com/ → https://example.com (remove trailing slash on root)
+
+    Raises ValueError for:
+    - Empty or whitespace-only URLs
+    - Invalid schemes (javascript:, data:, ftp:, etc.)
+
+    Args:
+        url: The URL to normalize
+
+    Returns:
+        Tuple of (normalized_url, was_modified)
+
+    Raises:
+        ValueError: If URL is empty or has invalid scheme
+    """
+    if not url or not url.strip():
+        raise ValueError("URL cannot be empty")
+
+    original = url
+    url = url.strip()
+
+    # Handle protocol-relative URLs (//example.com)
+    if url.startswith('//'):
+        url = 'https:' + url
+
+    # Check if URL has a scheme
+    if '://' in url:
+        scheme = url.split('://')[0].lower()
+
+        # Check for invalid schemes
+        if scheme in INVALID_SCHEMES:
+            raise ValueError(
+                f"Invalid URL scheme '{scheme}'. Only http and https are supported."
+            )
+
+        # Check for unknown schemes (not http/https)
+        if scheme not in VALID_SCHEMES:
+            raise ValueError(
+                f"Invalid URL scheme '{scheme}'. Only http and https are supported."
+            )
+    else:
+        # No scheme - need to add one
+        if LOCALHOST_PATTERN.match(url) or IP_PATTERN.match(url):
+            # localhost and IPs default to http
+            url = 'http://' + url
+        elif ':' in url.split('/')[0] and not url.split('/')[0].split(':')[1].isdigit():
+            # Has colon but not a port number - might be malformed
+            raise ValueError(
+                f"Invalid URL format. Only http and https are supported."
+            )
+        else:
+            # Regular domain - default to https
+            url = 'https://' + url
+
+    # Parse and normalize
+    try:
+        parsed = urlparse(url)
+    except Exception as e:
+        raise ValueError(f"Invalid URL format: {e}")
+
+    # Lowercase the scheme and netloc (domain)
+    scheme = parsed.scheme.lower()
+    netloc = parsed.netloc.lower()
+
+    # Remove default ports
+    if ':' in netloc:
+        host, port = netloc.rsplit(':', 1)
+        if (scheme == 'https' and port == '443') or (scheme == 'http' and port == '80'):
+            netloc = host
+
+    # Remove trailing slash only for root path
+    path = parsed.path
+    if path == '/':
+        path = ''
+
+    # Reconstruct URL
+    normalized = urlunparse((
+        scheme,
+        netloc,
+        path,
+        parsed.params,
+        parsed.query,
+        ''  # Remove fragment
+    ))
+
+    was_modified = normalized != original
+
+    return normalized, was_modified
+
+
+# =============================================================================
+# Configuration Sanitization
+# =============================================================================
 
 # Fields that cloud controls - removed from CrawlerRunConfig
 CRAWLER_CONFIG_SANITIZE_FIELDS = [
@@ -335,6 +466,8 @@ def build_crawl_request(
     """
     Build a crawl request body for the cloud API.
 
+    URLs are automatically normalized (https:// prefix added if missing).
+
     Args:
         url: Single URL to crawl
         urls: List of URLs to crawl
@@ -350,10 +483,22 @@ def build_crawl_request(
     """
     body: Dict[str, Any] = {"strategy": strategy}
 
+    # Normalize single URL
     if url:
-        body["url"] = url
+        normalized, was_modified = normalize_url(url)
+        if was_modified:
+            logger.debug(f"URL normalized: {url} → {normalized}")
+        body["url"] = normalized
+
+    # Normalize list of URLs
     if urls:
-        body["urls"] = urls
+        normalized_urls = []
+        for u in urls:
+            normalized, was_modified = normalize_url(u)
+            if was_modified:
+                logger.debug(f"URL normalized: {u} → {normalized}")
+            normalized_urls.append(normalized)
+        body["urls"] = normalized_urls
 
     # Sanitize and add configs
     crawler_config = sanitize_crawler_config(config)

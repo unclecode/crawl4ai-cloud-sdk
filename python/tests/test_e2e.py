@@ -607,9 +607,10 @@ class TestBatchCrawl:
         async with AsyncWebCrawler(api_key=API_KEY) as crawler:
             job = await crawler.run_many(urls, wait=False)
 
-            # Small batches return completed job immediately
+            # With wait=False, job is returned immediately in async state
+            # Status can be pending, processing, or completed (if very fast)
             assert isinstance(job, CrawlJob)
-            assert job.status == "completed"
+            assert job.status in ("pending", "processing", "completed")
 
     @pytest.mark.asyncio
     async def test_run_many_with_config(self):

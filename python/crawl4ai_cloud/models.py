@@ -461,12 +461,16 @@ class CrawlResult:
         markdown_data = data.get("markdown")
         markdown = None
         if markdown_data:
-            markdown = MarkdownResult(
-                raw_markdown=markdown_data.get("raw_markdown"),
-                markdown_with_citations=markdown_data.get("markdown_with_citations"),
-                references_markdown=markdown_data.get("references_markdown"),
-                fit_markdown=markdown_data.get("fit_markdown"),
-            )
+            # Handle both string (async results) and dict (sync results) formats
+            if isinstance(markdown_data, str):
+                markdown = MarkdownResult(raw_markdown=markdown_data)
+            else:
+                markdown = MarkdownResult(
+                    raw_markdown=markdown_data.get("raw_markdown"),
+                    markdown_with_citations=markdown_data.get("markdown_with_citations"),
+                    references_markdown=markdown_data.get("references_markdown"),
+                    fit_markdown=markdown_data.get("fit_markdown"),
+                )
 
         llm_usage = None
         if data.get("llm_usage"):

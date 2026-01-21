@@ -409,14 +409,20 @@ export interface CrawlResult {
  */
 export function crawlResultFromDict(data: Record<string, unknown>): CrawlResult {
   let markdown: MarkdownResult | undefined;
-  const markdownData = data.markdown as Record<string, unknown> | undefined;
+  const markdownData = data.markdown;
   if (markdownData) {
-    markdown = {
-      rawMarkdown: markdownData.raw_markdown as string | undefined,
-      markdownWithCitations: markdownData.markdown_with_citations as string | undefined,
-      referencesMarkdown: markdownData.references_markdown as string | undefined,
-      fitMarkdown: markdownData.fit_markdown as string | undefined,
-    };
+    // Handle both string (async results) and object (sync results) formats
+    if (typeof markdownData === 'string') {
+      markdown = { rawMarkdown: markdownData };
+    } else {
+      const md = markdownData as Record<string, unknown>;
+      markdown = {
+        rawMarkdown: md.raw_markdown as string | undefined,
+        markdownWithCitations: md.markdown_with_citations as string | undefined,
+        referencesMarkdown: md.references_markdown as string | undefined,
+        fitMarkdown: md.fit_markdown as string | undefined,
+      };
+    }
   }
 
   let llmUsage: LLMUsage | undefined;

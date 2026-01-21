@@ -217,7 +217,10 @@ func CrawlResultFromMap(data map[string]interface{}) *CrawlResult {
 		result.Tables = v
 	}
 
-	if md, ok := data["markdown"].(map[string]interface{}); ok {
+	// Handle both string (async results) and object (sync results) formats
+	if mdStr, ok := data["markdown"].(string); ok {
+		result.Markdown = &MarkdownResult{RawMarkdown: mdStr}
+	} else if md, ok := data["markdown"].(map[string]interface{}); ok {
 		result.Markdown = &MarkdownResult{}
 		if v, ok := md["raw_markdown"].(string); ok {
 			result.Markdown.RawMarkdown = v

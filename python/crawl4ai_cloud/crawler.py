@@ -664,6 +664,55 @@ class AsyncWebCrawler:
 
             await asyncio.sleep(poll_interval)
 
+    async def cancel_deep_crawl(self, job_id: str) -> DeepCrawlResult:
+        """
+        Cancel a running deep crawl job.
+
+        The crawl will stop at the next batch boundary, preserving any
+        partial results that have been collected so far.
+
+        Args:
+            job_id: Deep crawl job ID (scan_xxx format)
+
+        Returns:
+            DeepCrawlResult with status "cancelled" and partial results
+
+        Example:
+            ```python
+            # Start deep crawl without waiting
+            result = await crawler.deep_crawl(
+                "https://docs.example.com",
+                max_urls=500,
+                wait=False,
+            )
+
+            # Cancel after some time
+            await asyncio.sleep(10)
+            cancelled = await crawler.cancel_deep_crawl(result.job_id)
+            print(f"Cancelled with {cancelled.discovered_count} partial results")
+            ```
+        """
+        data = await self._http.request("POST", f"/v1/crawl/deep/jobs/{job_id}/cancel")
+        return DeepCrawlResult(
+            job_id=job_id,
+            status="cancelled",
+            strategy=data.get("strategy"),
+            discovered_count=data.get("discovered_urls", 0),
+        )
+
+    async def get_deep_crawl_status(self, job_id: str) -> DeepCrawlResult:
+        """
+        Get the status of a deep crawl job.
+
+        Args:
+            job_id: Deep crawl job ID (scan_xxx format)
+
+        Returns:
+            DeepCrawlResult with current status and discovered URLs
+        """
+        data = await self._http.request("GET", f"/v1/crawl/deep/jobs/{job_id}")
+        return DeepCrawlResult.from_dict(data)
+
     # -------------------------------------------------------------------------
     # Context API
     # -------------------------------------------------------------------------

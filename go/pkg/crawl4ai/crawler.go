@@ -488,6 +488,43 @@ func (c *AsyncWebCrawler) waitScanJob(jobID string, pollInterval, timeout time.D
 	}
 }
 
+// CancelDeepCrawl cancels a running deep crawl job.
+// The crawl will stop at the next batch boundary, preserving any
+// partial results that have been collected so far.
+func (c *AsyncWebCrawler) CancelDeepCrawl(jobID string) (*DeepCrawlResult, error) {
+	data, err := c.http.Post(fmt.Sprintf("/v1/crawl/deep/jobs/%s/cancel", jobID), nil, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	discoveredCount := 0
+	if v, ok := data["discovered_urls"].(float64); ok {
+		discoveredCount = int(v)
+	}
+
+	strategy := ""
+	if v, ok := data["strategy"].(string); ok {
+		strategy = v
+	}
+
+	return &DeepCrawlResult{
+		JobID:           jobID,
+		Status:          "cancelled",
+		Strategy:        strategy,
+		DiscoveredCount: discoveredCount,
+	}, nil
+}
+
+// GetDeepCrawlStatus gets the status of a deep crawl job.
+func (c *AsyncWebCrawler) GetDeepCrawlStatus(jobID string) (*DeepCrawlResult, error) {
+	data, err := c.http.Get(fmt.Sprintf("/v1/crawl/deep/jobs/%s", jobID), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return DeepCrawlResultFromMap(data), nil
+}
+
 // ContextOptions are options for Context.
 type ContextOptions struct {
 	PAALimit      int

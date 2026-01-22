@@ -486,6 +486,51 @@ export class AsyncWebCrawler {
     }
   }
 
+  /**
+   * Cancel a running deep crawl job.
+   *
+   * The crawl will stop at the next batch boundary, preserving any
+   * partial results that have been collected so far.
+   *
+   * @param jobId - Deep crawl job ID (scan_xxx format)
+   * @returns DeepCrawlResult with status "cancelled" and partial results
+   *
+   * @example
+   * ```typescript
+   * // Start deep crawl without waiting
+   * const result = await crawler.deepCrawl('https://docs.example.com', {
+   *   maxUrls: 500,
+   *   wait: false,
+   * });
+   *
+   * // Cancel after some time
+   * await new Promise(r => setTimeout(r, 10000));
+   * const cancelled = await crawler.cancelDeepCrawl(result.jobId);
+   * console.log(`Cancelled with ${cancelled.discoveredCount} partial results`);
+   * ```
+   */
+  async cancelDeepCrawl(jobId: string): Promise<DeepCrawlResult> {
+    const data = await this.http.post(`/v1/crawl/deep/jobs/${jobId}/cancel`, {});
+    return {
+      jobId,
+      status: 'cancelled',
+      strategy: (data.strategy as string) || undefined,
+      discoveredCount: (data.discovered_urls as number) || 0,
+      queuedCount: 0,
+    };
+  }
+
+  /**
+   * Get the status of a deep crawl job.
+   *
+   * @param jobId - Deep crawl job ID (scan_xxx format)
+   * @returns DeepCrawlResult with current status and discovered URLs
+   */
+  async getDeepCrawlStatus(jobId: string): Promise<DeepCrawlResult> {
+    const data = await this.http.get(`/v1/crawl/deep/jobs/${jobId}`);
+    return deepCrawlResultFromDict(data);
+  }
+
   // -------------------------------------------------------------------------
   // Context API
   // -------------------------------------------------------------------------

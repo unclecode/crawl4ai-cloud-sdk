@@ -514,9 +514,10 @@ export class AsyncWebCrawler {
     return {
       jobId,
       status: 'cancelled',
-      strategy: (data.strategy as string) || undefined,
+      strategy: (data.strategy as string) || 'unknown',
       discoveredCount: (data.discovered_urls as number) || 0,
-      queuedCount: 0,
+      queuedUrls: 0,
+      createdAt: '',
     };
   }
 

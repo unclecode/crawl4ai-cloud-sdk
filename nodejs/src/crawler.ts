@@ -232,10 +232,8 @@ export class AsyncWebCrawler {
       job = await this.waitJob(job.jobId, {
         pollInterval,
         timeout,
-        includeResults: true,
       });
-      // job.results is already CrawlResult[] from crawlJobFromDict
-      return job.results || [];
+      // Results are available via downloadUrl() after job completes
     }
 
     return job;
@@ -246,39 +244,32 @@ export class AsyncWebCrawler {
   // -------------------------------------------------------------------------
 
   /**
-   * Get job status and optionally results.
+   * Get job status.
+   * To get results, use downloadUrl() to get a presigned URL for the ZIP file.
    */
-  async getJob(jobId: string, includeResults = false): Promise<CrawlJob> {
-    const params: Record<string, string> = {};
-    if (includeResults) {
-      params.include_results = 'true';
-    }
-
-    const data = await this.http.get(`/v1/crawl/jobs/${jobId}`, params);
+  async getJob(jobId: string): Promise<CrawlJob> {
+    const data = await this.http.get(`/v1/crawl/jobs/${jobId}`);
     return crawlJobFromDict(data);
   }
 
   /**
    * Poll until job completes.
+   * To get results after job completes, use downloadUrl() to get a presigned URL for the ZIP file.
    */
   async waitJob(
     jobId: string,
     options: {
       pollInterval?: number;
       timeout?: number;
-      includeResults?: boolean;
     } = {}
   ): Promise<CrawlJob> {
-    const { pollInterval = 2.0, timeout, includeResults = true } = options;
+    const { pollInterval = 2.0, timeout } = options;
     const startTime = Date.now();
 
     while (true) {
-      const job = await this.getJob(jobId, false);
+      const job = await this.getJob(jobId);
 
       if (isJobComplete(job)) {
-        if (includeResults) {
-          return this.getJob(jobId, true);
-        }
         return job;
       }
 
@@ -453,7 +444,6 @@ export class AsyncWebCrawler {
       return this.waitJob(result.crawlJobId, {
         pollInterval,
         timeout,
-        includeResults: true,
       });
     }
 
@@ -566,9 +556,35 @@ export class AsyncWebCrawler {
 
   /**
    * Generate extraction schema from HTML using LLM.
+   *
+   * Supports three modes:
+   * - Single HTML: Pass a single HTML string
+   * - Multiple HTML: Pass an array of HTML strings for robust selectors
+   * - From URLs: Pass an object with `urls` array (max 3) to fetch HTML from
+   *
+   * @param htmlOrUrls - HTML string, array of HTML strings, or object with urls array
+   * @param options - Generation options
+   * @returns GeneratedSchema with selectors or error
+   *
+   * @example
+   * ```typescript
+   * // Single HTML
+   * const schema = await crawler.generateSchema(page.html, { query: 'Extract products' });
+   *
+   * // Multiple HTML samples
+   * const schema = await crawler.generateSchema([page1.html, page2.html], {
+   *   query: 'Extract products from these samples'
+   * });
+   *
+   * // From URLs (max 3)
+   * const schema = await crawler.generateSchema(
+   *   { urls: ['https://example.com/p/1', 'https://example.com/p/2'] },
+   *   { query: 'Extract product details' }
+   * );
+   * ```
    */
   async generateSchema(
-    html: string,
+    htmlOrUrls: string | string[] | { urls: string[] },
     options: {
       query?: string;
       schemaType?: 'CSS' | 'XPATH';
@@ -578,7 +594,24 @@ export class AsyncWebCrawler {
   ): Promise<GeneratedSchema> {
     const { query, schemaType = 'CSS', targetJsonExample, llmConfig } = options;
 
-    const body: Record<string, unknown> = { html, schema_type: schemaType };
+    const body: Record<string, unknown> = { schema_type: schemaType };
+
+    if (typeof htmlOrUrls === 'string') {
+      // Single HTML string
+      body.html = htmlOrUrls;
+    } else if (Array.isArray(htmlOrUrls)) {
+      // Array of HTML strings
+      body.html = htmlOrUrls;
+    } else if (htmlOrUrls && 'urls' in htmlOrUrls) {
+      // URLs object
+      if (htmlOrUrls.urls.length > 3) {
+        throw new Error('Maximum 3 URLs allowed');
+      }
+      body.urls = htmlOrUrls.urls;
+    } else {
+      throw new Error("Either 'html' or 'urls' must be provided");
+    }
+
     if (query) body.query = query;
     if (targetJsonExample) body.target_json_example = targetJsonExample;
     if (llmConfig) body.llm_config = llmConfig;

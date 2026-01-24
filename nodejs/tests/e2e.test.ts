@@ -446,6 +446,89 @@ describe('Deep Crawl', () => {
 });
 
 // =============================================================================
+// SCHEMA GENERATION TESTS
+// =============================================================================
+
+describe('Schema Generation', () => {
+  let crawler: AsyncWebCrawler;
+
+  const SAMPLE_HTML = `
+    <html>
+    <body>
+      <div class="product">
+        <h2 class="title">Product 1</h2>
+        <span class="price">$19.99</span>
+      </div>
+    </body>
+    </html>
+  `;
+
+  const SAMPLE_HTML_2 = `
+    <html>
+    <body>
+      <div class="product">
+        <h2 class="title">Widget A</h2>
+        <span class="price">$49.99</span>
+      </div>
+    </body>
+    </html>
+  `;
+
+  beforeAll(() => {
+    crawler = new AsyncWebCrawler({ apiKey: API_KEY });
+  });
+
+  afterAll(async () => {
+    await crawler.close();
+  });
+
+  test('should generate schema from single HTML', async () => {
+    const schema = await crawler.generateSchema(SAMPLE_HTML, {
+      query: 'Extract product titles and prices',
+    });
+
+    expect(schema).toBeDefined();
+    // Schema may succeed or fail depending on LLM
+    expect(schema.success === true || schema.error !== undefined).toBe(true);
+  });
+
+  test('should generate schema from multiple HTML samples', async () => {
+    const schema = await crawler.generateSchema([SAMPLE_HTML, SAMPLE_HTML_2], {
+      query: 'Extract product titles and prices from these samples',
+    });
+
+    expect(schema).toBeDefined();
+    expect(schema.success === true || schema.error !== undefined).toBe(true);
+  });
+
+  test('should generate schema from URLs', async () => {
+    const schema = await crawler.generateSchema(
+      { urls: ['https://example.com'] },
+      { query: 'Extract any content' }
+    );
+
+    expect(schema).toBeDefined();
+    // May succeed or fail depending on URL content
+  });
+
+  test('should throw error for more than 3 URLs', async () => {
+    await expect(
+      crawler.generateSchema(
+        {
+          urls: [
+            'https://example.com/1',
+            'https://example.com/2',
+            'https://example.com/3',
+            'https://example.com/4',
+          ],
+        },
+        { query: 'Extract products' }
+      )
+    ).rejects.toThrow('Maximum 3 URLs allowed');
+  });
+});
+
+// =============================================================================
 // INTEGRATION TESTS
 // =============================================================================
 

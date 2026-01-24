@@ -162,7 +162,7 @@ class AsyncWebCrawler:
         priority: int = 5,
         webhook_url: Optional[str] = None,
         **kwargs,
-    ) -> Union[CrawlJob, List[CrawlResult]]:
+    ) -> CrawlJob:
         """
         Crawl multiple URLs.
 
@@ -176,7 +176,7 @@ class AsyncWebCrawler:
             strategy: "browser" (JS support) or "http" (faster, no JS)
             proxy: Proxy configuration
             bypass_cache: Skip cache for all URLs
-            wait: If True, poll until complete and return results
+            wait: If True, poll until job completes
             poll_interval: Seconds between status polls (default: 2.0)
             timeout: Max seconds to wait (None = no timeout)
             priority: Job priority 1-10 (default: 5)
@@ -184,8 +184,11 @@ class AsyncWebCrawler:
             **kwargs: Additional parameters passed to API
 
         Returns:
-            - If wait=False: CrawlJob with job ID and status
-            - If wait=True: List[CrawlResult] with all results
+            CrawlJob with job ID and status
+
+        Note:
+            To get results after job completes, use download_url(job.id) to get
+            a presigned URL for the ZIP file containing all crawl results.
 
         Example:
             ```python
@@ -193,10 +196,11 @@ class AsyncWebCrawler:
             job = await crawler.run_many(urls)
             print(f"Job {job.id} started")
 
-            # Wait for results
-            results = await crawler.run_many(urls, wait=True)
-            for r in results:
-                print(f"{r.url}: {r.success}")
+            # Wait for completion, then download results
+            job = await crawler.run_many(urls, wait=True)
+            if job.is_complete:
+                url = await crawler.download_url(job.id)
+                print(f"Download results: {url}")
             ```
         """
         # Always use async endpoint for consistent job tracking
@@ -220,7 +224,7 @@ class AsyncWebCrawler:
         urls: List[str],
         config: Optional[Union[CrawlerRunConfig, Dict[str, Any]]] = None,
         **kwargs,
-    ) -> Union[CrawlJob, List[CrawlResult]]:
+    ) -> CrawlJob:
         """
         Crawl multiple URLs (OSS compatibility alias for run_many()).
 
@@ -243,7 +247,7 @@ class AsyncWebCrawler:
         priority: int = 5,
         webhook_url: Optional[str] = None,
         **kwargs,
-    ) -> Union[CrawlJob, List[CrawlResult]]:
+    ) -> CrawlJob:
         """Internal: Async crawl for >10 URLs."""
         body = build_crawl_request(
             urls=urls,
@@ -267,10 +271,8 @@ class AsyncWebCrawler:
                 job.id,
                 poll_interval=poll_interval,
                 timeout=timeout,
-                include_results=True,
             )
-            # job.results is already List[CrawlResult] from CrawlJob.from_dict
-            return job.results or []
+            # Results are available via download_url() after job completes
 
         return job
 
@@ -278,26 +280,20 @@ class AsyncWebCrawler:
     # Job Management
     # -------------------------------------------------------------------------
 
-    async def get_job(
-        self,
-        job_id: str,
-        include_results: bool = False,
-    ) -> CrawlJob:
+    async def get_job(self, job_id: str) -> CrawlJob:
         """
-        Get job status and optionally results.
+        Get job status.
 
         Args:
             job_id: Job ID to check
-            include_results: Include full crawl results (large payload)
 
         Returns:
             CrawlJob with current status
-        """
-        params = {}
-        if include_results:
-            params["include_results"] = "true"
 
-        data = await self._http.request("GET", f"/v1/crawl/jobs/{job_id}", params=params)
+        Note:
+            To get results, use download_url() to get a presigned URL for the ZIP file.
+        """
+        data = await self._http.request("GET", f"/v1/crawl/jobs/{job_id}")
         return CrawlJob.from_dict(data)
 
     async def wait_job(
@@ -305,7 +301,6 @@ class AsyncWebCrawler:
         job_id: str,
         poll_interval: float = 2.0,
         timeout: Optional[float] = None,
-        include_results: bool = True,
     ) -> CrawlJob:
         """
         Poll until job completes.
@@ -318,13 +313,16 @@ class AsyncWebCrawler:
             job_id: Job ID to wait for (supports both job_xxx and scan_xxx formats)
             poll_interval: Seconds between polls (default: 2.0)
             timeout: Max seconds to wait (None = no timeout)
-            include_results: Include results in final response
 
         Returns:
-            CrawlJob with final status and optionally results
+            CrawlJob with final status
 
         Raises:
             TimeoutError: If timeout exceeded
+
+        Note:
+            To get results after job completes, use download_url() to get a presigned
+            URL for the ZIP file containing all crawl results.
         """
         start_time = time.time()
 
@@ -348,7 +346,6 @@ class AsyncWebCrawler:
                     scan_result.crawl_job_id,
                     poll_interval=poll_interval,
                     timeout=remaining_timeout,
-                    include_results=include_results,
                 )
 
             # Scan only mode (no crawl job) - return CrawlJob-like response
@@ -367,11 +364,9 @@ class AsyncWebCrawler:
 
         # Regular crawl job polling
         while True:
-            job = await self.get_job(job_id, include_results=False)
+            job = await self.get_job(job_id)
 
             if job.is_complete:
-                if include_results:
-                    return await self.get_job(job_id, include_results=True)
                 return job
 
             if timeout and (time.time() - start_time) > timeout:
@@ -635,7 +630,6 @@ class AsyncWebCrawler:
                 scan_result.crawl_job_id,
                 poll_interval=poll_interval,
                 timeout=timeout,
-                include_results=True,
             )
 
         return scan_result
@@ -762,7 +756,8 @@ class AsyncWebCrawler:
 
     async def generate_schema(
         self,
-        html: str,
+        html: Optional[Union[str, List[str]]] = None,
+        urls: Optional[List[str]] = None,
         query: Optional[str] = None,
         schema_type: str = "CSS",
         target_json_example: Optional[Dict[str, Any]] = None,
@@ -774,8 +769,17 @@ class AsyncWebCrawler:
         Creates CSS or XPath selectors that can be used with
         JsonCssExtractionStrategy for fast, LLM-free extractions.
 
+        Supports three modes:
+        - Single HTML: Pass a single HTML string
+        - Multiple HTML: Pass a list of HTML strings for robust selectors
+        - From URLs: Pass a list of URLs (max 3) to fetch HTML from
+
         Args:
-            html: HTML content to analyze
+            html: HTML content to analyze. Can be a single string or list
+                  of strings for multi-sample generation. Required if urls
+                  not provided.
+            urls: List of URLs to fetch HTML from (max 3). The API fetches
+                  these in parallel via workers. Required if html not provided.
             query: Natural language description of what to extract
             schema_type: "CSS" (default) or "XPATH"
             target_json_example: Example of desired output structure
@@ -783,8 +787,41 @@ class AsyncWebCrawler:
 
         Returns:
             GeneratedSchema with selectors or error
+
+        Raises:
+            ValueError: If neither html nor urls provided, or if both are provided
+
+        Example:
+            ```python
+            # Single HTML
+            schema = await crawler.generate_schema(html=page.html, query="Extract products")
+
+            # Multiple HTML samples
+            schema = await crawler.generate_schema(
+                html=[page1.html, page2.html],
+                query="Extract products from these samples"
+            )
+
+            # From URLs (max 3)
+            schema = await crawler.generate_schema(
+                urls=["https://example.com/p/1", "https://example.com/p/2"],
+                query="Extract product details"
+            )
+            ```
         """
-        body: Dict[str, Any] = {"html": html, "schema_type": schema_type}
+        if not html and not urls:
+            raise ValueError("Either 'html' or 'urls' must be provided")
+        if html and urls:
+            raise ValueError("Provide either 'html' or 'urls', not both")
+
+        body: Dict[str, Any] = {"schema_type": schema_type}
+
+        if html is not None:
+            body["html"] = html
+        if urls is not None:
+            if len(urls) > 3:
+                raise ValueError("Maximum 3 URLs allowed")
+            body["urls"] = urls
         if query:
             body["query"] = query
         if target_json_example:

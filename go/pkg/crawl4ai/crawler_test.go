@@ -546,7 +546,7 @@ func TestGetJob_NotFound(t *testing.T) {
 		t.Fatalf("Failed to create crawler: %v", err)
 	}
 
-	_, err = crawler.GetJob("nonexistent-job-12345", false)
+	_, err = crawler.GetJob("nonexistent-job-12345")
 	if err == nil {
 		t.Fatal("Expected error for non-existent job")
 	}
@@ -676,5 +676,139 @@ func TestOSSMigrationPattern(t *testing.T) {
 	}
 	if result.Markdown == nil || result.Markdown.RawMarkdown == "" {
 		t.Fatal("Markdown is nil or empty")
+	}
+}
+
+// =============================================================================
+// SCHEMA GENERATION TESTS
+// =============================================================================
+
+const sampleHTML = `
+<html>
+<body>
+    <div class="product">
+        <h2 class="title">Product 1</h2>
+        <span class="price">$19.99</span>
+    </div>
+</body>
+</html>
+`
+
+const sampleHTML2 = `
+<html>
+<body>
+    <div class="product">
+        <h2 class="title">Widget A</h2>
+        <span class="price">$49.99</span>
+    </div>
+</body>
+</html>
+`
+
+func TestGenerateSchema_SingleHTML(t *testing.T) {
+	crawler, err := NewAsyncWebCrawler(CrawlerOptions{APIKey: testAPIKey})
+	if err != nil {
+		t.Fatalf("Failed to create crawler: %v", err)
+	}
+
+	schema, err := crawler.GenerateSchema(sampleHTML, &GenerateSchemaOptions{
+		Query: "Extract product titles and prices",
+	})
+	if err != nil {
+		t.Fatalf("GenerateSchema failed: %v", err)
+	}
+
+	if schema == nil {
+		t.Fatal("Schema is nil")
+	}
+	// Schema may succeed or fail depending on LLM
+	if !schema.Success && schema.Error == "" {
+		t.Fatal("Schema should either succeed or have an error")
+	}
+}
+
+func TestGenerateSchema_MultipleHTML(t *testing.T) {
+	crawler, err := NewAsyncWebCrawler(CrawlerOptions{APIKey: testAPIKey})
+	if err != nil {
+		t.Fatalf("Failed to create crawler: %v", err)
+	}
+
+	schema, err := crawler.GenerateSchema([]string{sampleHTML, sampleHTML2}, &GenerateSchemaOptions{
+		Query: "Extract product titles and prices from these samples",
+	})
+	if err != nil {
+		t.Fatalf("GenerateSchema failed: %v", err)
+	}
+
+	if schema == nil {
+		t.Fatal("Schema is nil")
+	}
+}
+
+func TestGenerateSchemaFromURLs_Basic(t *testing.T) {
+	crawler, err := NewAsyncWebCrawler(CrawlerOptions{APIKey: testAPIKey})
+	if err != nil {
+		t.Fatalf("Failed to create crawler: %v", err)
+	}
+
+	schema, err := crawler.GenerateSchemaFromURLs([]string{"https://example.com"}, &GenerateSchemaOptions{
+		Query: "Extract any content",
+	})
+	if err != nil {
+		t.Fatalf("GenerateSchemaFromURLs failed: %v", err)
+	}
+
+	if schema == nil {
+		t.Fatal("Schema is nil")
+	}
+}
+
+func TestGenerateSchemaFromURLs_MaxThreeURLs(t *testing.T) {
+	crawler, err := NewAsyncWebCrawler(CrawlerOptions{APIKey: testAPIKey})
+	if err != nil {
+		t.Fatalf("Failed to create crawler: %v", err)
+	}
+
+	_, err = crawler.GenerateSchemaFromURLs([]string{
+		"https://example.com/1",
+		"https://example.com/2",
+		"https://example.com/3",
+		"https://example.com/4",
+	}, nil)
+	if err == nil {
+		t.Fatal("Expected error for more than 3 URLs")
+	}
+	if !strings.Contains(err.Error(), "maximum 3 URLs") {
+		t.Fatalf("Expected 'maximum 3 URLs' error, got: %v", err)
+	}
+}
+
+func TestGenerateSchemaFromURLs_EmptyURLs(t *testing.T) {
+	crawler, err := NewAsyncWebCrawler(CrawlerOptions{APIKey: testAPIKey})
+	if err != nil {
+		t.Fatalf("Failed to create crawler: %v", err)
+	}
+
+	_, err = crawler.GenerateSchemaFromURLs([]string{}, nil)
+	if err == nil {
+		t.Fatal("Expected error for empty URLs")
+	}
+	if !strings.Contains(err.Error(), "at least one URL") {
+		t.Fatalf("Expected 'at least one URL' error, got: %v", err)
+	}
+}
+
+func TestGenerateSchema_InvalidHTMLType(t *testing.T) {
+	crawler, err := NewAsyncWebCrawler(CrawlerOptions{APIKey: testAPIKey})
+	if err != nil {
+		t.Fatalf("Failed to create crawler: %v", err)
+	}
+
+	_, err = crawler.GenerateSchema(12345, nil)
+	if err == nil {
+		t.Fatal("Expected error for invalid html type")
+	}
+	if !strings.Contains(err.Error(), "string or []string") {
+		t.Fatalf("Expected type error, got: %v", err)
 	}
 }

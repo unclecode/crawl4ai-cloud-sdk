@@ -852,33 +852,101 @@ class TestDeepCrawl:
 class TestSchemaGeneration:
     """Test schema generation API."""
 
-    @pytest.mark.asyncio
-    async def test_generate_schema_basic(self):
-        """Test basic schema generation."""
-        html = """
-        <html>
-        <body>
-            <div class="product">
-                <h2 class="title">Product 1</h2>
-                <span class="price">$19.99</span>
-            </div>
-            <div class="product">
-                <h2 class="title">Product 2</h2>
-                <span class="price">$29.99</span>
-            </div>
-        </body>
-        </html>
-        """
+    SAMPLE_HTML = """
+    <html>
+    <body>
+        <div class="product">
+            <h2 class="title">Product 1</h2>
+            <span class="price">$19.99</span>
+        </div>
+        <div class="product">
+            <h2 class="title">Product 2</h2>
+            <span class="price">$29.99</span>
+        </div>
+    </body>
+    </html>
+    """
 
+    SAMPLE_HTML_2 = """
+    <html>
+    <body>
+        <div class="product">
+            <h2 class="title">Widget A</h2>
+            <span class="price">$49.99</span>
+        </div>
+    </body>
+    </html>
+    """
+
+    @pytest.mark.asyncio
+    async def test_generate_schema_single_html(self):
+        """Test schema generation with single HTML sample."""
         async with AsyncWebCrawler(api_key=API_KEY) as crawler:
             schema = await crawler.generate_schema(
-                html=html,
+                html=self.SAMPLE_HTML,
                 query="Extract product titles and prices"
             )
 
             assert isinstance(schema, GeneratedSchema)
             # Schema generation may succeed or fail depending on LLM
             assert schema.success is True or schema.error is not None
+
+    @pytest.mark.asyncio
+    async def test_generate_schema_multiple_html(self):
+        """Test schema generation with multiple HTML samples."""
+        async with AsyncWebCrawler(api_key=API_KEY) as crawler:
+            schema = await crawler.generate_schema(
+                html=[self.SAMPLE_HTML, self.SAMPLE_HTML_2],
+                query="Extract product titles and prices from these samples"
+            )
+
+            assert isinstance(schema, GeneratedSchema)
+            assert schema.success is True or schema.error is not None
+
+    @pytest.mark.asyncio
+    async def test_generate_schema_from_urls(self):
+        """Test schema generation from URLs."""
+        async with AsyncWebCrawler(api_key=API_KEY) as crawler:
+            schema = await crawler.generate_schema(
+                urls=["https://example.com"],
+                query="Extract any content"
+            )
+
+            assert isinstance(schema, GeneratedSchema)
+            # May succeed or fail depending on URL content and LLM
+
+    @pytest.mark.asyncio
+    async def test_generate_schema_requires_html_or_urls(self):
+        """Test that either html or urls is required."""
+        async with AsyncWebCrawler(api_key=API_KEY) as crawler:
+            with pytest.raises(ValueError, match="Either 'html' or 'urls' must be provided"):
+                await crawler.generate_schema(query="Extract products")
+
+    @pytest.mark.asyncio
+    async def test_generate_schema_rejects_both_html_and_urls(self):
+        """Test that providing both html and urls raises error."""
+        async with AsyncWebCrawler(api_key=API_KEY) as crawler:
+            with pytest.raises(ValueError, match="not both"):
+                await crawler.generate_schema(
+                    html=self.SAMPLE_HTML,
+                    urls=["https://example.com"],
+                    query="Extract products"
+                )
+
+    @pytest.mark.asyncio
+    async def test_generate_schema_max_three_urls(self):
+        """Test that max 3 URLs is enforced."""
+        async with AsyncWebCrawler(api_key=API_KEY) as crawler:
+            with pytest.raises(ValueError, match="Maximum 3 URLs"):
+                await crawler.generate_schema(
+                    urls=[
+                        "https://example.com/1",
+                        "https://example.com/2",
+                        "https://example.com/3",
+                        "https://example.com/4",
+                    ],
+                    query="Extract products"
+                )
 
 
 # =============================================================================

@@ -148,26 +148,22 @@ func (c *AsyncWebCrawler) runAsync(urls []string, opts *RunManyOptions) (*RunMan
 			pollInterval = 2 * time.Second
 		}
 
-		job, err = c.WaitJob(job.JobID, pollInterval, opts.Timeout, true)
+		job, err = c.WaitJob(job.JobID, pollInterval, opts.Timeout)
 		if err != nil {
 			return nil, err
 		}
 
-		// job.Results is already []*CrawlResult from CrawlJobFromMap
-		return &RunManyResult{Job: job, Results: job.Results}, nil
+		// Results are available via DownloadURL() after job completes
+		return &RunManyResult{Job: job}, nil
 	}
 
 	return &RunManyResult{Job: job}, nil
 }
 
-// GetJob gets job status and optionally results.
-func (c *AsyncWebCrawler) GetJob(jobID string, includeResults bool) (*CrawlJob, error) {
-	params := make(map[string]string)
-	if includeResults {
-		params["include_results"] = "true"
-	}
-
-	data, err := c.http.Get(fmt.Sprintf("/v1/crawl/jobs/%s", jobID), params)
+// GetJob gets job status.
+// To get results, use DownloadURL() to get a presigned URL for the ZIP file.
+func (c *AsyncWebCrawler) GetJob(jobID string) (*CrawlJob, error) {
+	data, err := c.http.Get(fmt.Sprintf("/v1/crawl/jobs/%s", jobID), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +172,8 @@ func (c *AsyncWebCrawler) GetJob(jobID string, includeResults bool) (*CrawlJob, 
 }
 
 // WaitJob polls until job completes.
-func (c *AsyncWebCrawler) WaitJob(jobID string, pollInterval, timeout time.Duration, includeResults bool) (*CrawlJob, error) {
+// To get results after job completes, use DownloadURL() to get a presigned URL for the ZIP file.
+func (c *AsyncWebCrawler) WaitJob(jobID string, pollInterval, timeout time.Duration) (*CrawlJob, error) {
 	if pollInterval == 0 {
 		pollInterval = 2 * time.Second
 	}
@@ -184,15 +181,12 @@ func (c *AsyncWebCrawler) WaitJob(jobID string, pollInterval, timeout time.Durat
 	startTime := time.Now()
 
 	for {
-		job, err := c.GetJob(jobID, false)
+		job, err := c.GetJob(jobID)
 		if err != nil {
 			return nil, err
 		}
 
 		if job.IsComplete() {
-			if includeResults {
-				return c.GetJob(jobID, true)
-			}
 			return job, nil
 		}
 
@@ -452,7 +446,7 @@ func (c *AsyncWebCrawler) DeepCrawl(url string, opts *DeepCrawlOptions) (*DeepCr
 
 	// If crawl job was created, wait for it
 	if result.CrawlJobID != "" {
-		job, err := c.WaitJob(result.CrawlJobID, pollInterval, opts.Timeout, true)
+		job, err := c.WaitJob(result.CrawlJobID, pollInterval, opts.Timeout)
 		if err != nil {
 			return nil, err
 		}
@@ -571,7 +565,19 @@ type GenerateSchemaOptions struct {
 }
 
 // GenerateSchema generates extraction schema from HTML using LLM.
-func (c *AsyncWebCrawler) GenerateSchema(html string, opts *GenerateSchemaOptions) (*GeneratedSchema, error) {
+//
+// The html parameter can be:
+//   - A single string: One HTML sample
+//   - A []string slice: Multiple HTML samples for robust selector generation
+//
+// Example:
+//
+//	// Single HTML
+//	schema, _ := crawler.GenerateSchema(page.HTML, &GenerateSchemaOptions{Query: "Extract products"})
+//
+//	// Multiple HTML samples
+//	schema, _ := crawler.GenerateSchema([]string{page1.HTML, page2.HTML}, nil)
+func (c *AsyncWebCrawler) GenerateSchema(html interface{}, opts *GenerateSchemaOptions) (*GeneratedSchema, error) {
 	if opts == nil {
 		opts = &GenerateSchemaOptions{}
 	}
@@ -582,7 +588,67 @@ func (c *AsyncWebCrawler) GenerateSchema(html string, opts *GenerateSchemaOption
 	}
 
 	body := map[string]interface{}{
-		"html":        html,
+		"schema_type": schemaType,
+	}
+
+	// Handle different html types
+	switch v := html.(type) {
+	case string:
+		body["html"] = v
+	case []string:
+		body["html"] = v
+	default:
+		return nil, fmt.Errorf("html must be string or []string, got %T", html)
+	}
+
+	if opts.Query != "" {
+		body["query"] = opts.Query
+	}
+	if opts.TargetJSONExample != nil {
+		body["target_json_example"] = opts.TargetJSONExample
+	}
+	if opts.LLMConfig != nil {
+		body["llm_config"] = opts.LLMConfig
+	}
+
+	data, err := c.http.Post("/v1/schema/generate", body, 60*time.Second)
+	if err != nil {
+		return nil, err
+	}
+
+	return GeneratedSchemaFromMap(data), nil
+}
+
+// GenerateSchemaFromURLs generates extraction schema by fetching HTML from URLs.
+//
+// URLs are fetched in parallel via worker infrastructure (max 3 URLs).
+// This is useful when you don't have the HTML content locally.
+//
+// Example:
+//
+//	schema, _ := crawler.GenerateSchemaFromURLs(
+//	    []string{"https://example.com/p/1", "https://example.com/p/2"},
+//	    &GenerateSchemaOptions{Query: "Extract product details"},
+//	)
+func (c *AsyncWebCrawler) GenerateSchemaFromURLs(urls []string, opts *GenerateSchemaOptions) (*GeneratedSchema, error) {
+	if len(urls) == 0 {
+		return nil, fmt.Errorf("at least one URL is required")
+	}
+	if len(urls) > 3 {
+		return nil, fmt.Errorf("maximum 3 URLs allowed, got %d", len(urls))
+	}
+
+	if opts == nil {
+		opts = &GenerateSchemaOptions{}
+	}
+
+	schemaType := opts.SchemaType
+	if schemaType == "" {
+		schemaType = "CSS"
+	}
+
+	body := map[string]interface{}{
+		"urls":        urls,
 		"schema_type": schemaType,
 	}
 

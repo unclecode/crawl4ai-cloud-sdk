@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "crawl4ai": {
+      "command": "python3",
+      "args": ["-m", "crawl4ai_cloud.claude.mcp_server"]
+    }
+  }
+}

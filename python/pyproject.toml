@@ -50,6 +50,12 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
 ]
+mcp = ["mcp>=1.0.0"]
+claude = ["mcp>=1.0.0"]
+local = ["crawl4ai"]
+
+[project.scripts]
+crawl4ai-mcp = "crawl4ai_cloud.claude.mcp_server:main"
 
 [tool.setuptools]
-packages = ["crawl4ai_cloud"]
+packages = ["crawl4ai_cloud", "crawl4ai_cloud.claude", "crawl4ai_cloud.claude.backends"]

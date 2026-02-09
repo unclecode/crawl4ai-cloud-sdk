@@ -1,0 +1,10 @@
+{
+  "name": "crawl4ai",
+  "version": "0.1.0",
+  "description": "Web crawling, extraction, screenshots, and URL discovery. Free local mode + cloud API.",
+  "author": {"name": "Crawl4AI", "email": "unclecode@kidocode.com"},
+  "homepage": "https://crawl4ai.com",
+  "repository": "https://github.com/unclecode/crawl4ai-cloud-sdk",
+  "license": "Apache-2.0",
+  "keywords": ["crawling", "scraping", "extraction", "web"]
+}

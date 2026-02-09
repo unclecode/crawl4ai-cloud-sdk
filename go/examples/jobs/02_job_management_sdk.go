@@ -43,7 +43,7 @@ func main() {
 
 	// Get job details
 	fmt.Println("\n=== Get Job Details ===")
-	job, err := crawler.GetJob(result.Job.ID, false)
+	job, err := crawler.GetJob(result.Job.JobID)
 	if err != nil {
 		log.Fatalf("Failed to get job: %v", err)
 	}
@@ -53,13 +53,12 @@ func main() {
 	fmt.Printf("URLs: %d\n", job.URLsCount)
 	fmt.Printf("Created: %s\n", job.CreatedAt)
 
-	// Wait for job and get results
+	// Wait for job completion
 	fmt.Println("\n=== Wait for Job ===")
 	completedJob, err := crawler.WaitJob(
-		result.Job.ID,
-		2*time.Second,   // Poll interval
-		5*time.Minute,   // Timeout
-		true,            // Include results
+		result.Job.JobID,
+		2*time.Second, // Poll interval
+		5*time.Minute, // Timeout
 	)
 	if err != nil {
 		log.Fatalf("Failed to wait for job: %v", err)
@@ -67,6 +66,11 @@ func main() {
 
 	fmt.Printf("Final Status: %s\n", completedJob.Status)
 	fmt.Printf("Progress: %d/%d\n", completedJob.Progress.Completed, completedJob.Progress.Total)
+
+	// Get download URL for results
+	if completedJob.DownloadURL != "" {
+		fmt.Printf("Download URL: %s\n", completedJob.DownloadURL)
+	}
 
 	// Cancel a job (create another one first)
 	fmt.Println("\n=== Cancel Job ===")

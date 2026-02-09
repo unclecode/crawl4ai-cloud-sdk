@@ -39,6 +39,7 @@ type CrawlJob struct {
 	Results         []*CrawlResult `json:"results,omitempty"`
 	Error           string         `json:"error,omitempty"`
 	ResultSizeBytes int            `json:"result_size_bytes,omitempty"`
+	DownloadURL     string         `json:"download_url,omitempty"`
 	// Usage contains resource usage metrics (completed jobs only)
 	Usage *Usage `json:"usage,omitempty"`
 }

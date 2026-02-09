@@ -138,10 +138,13 @@ jobs, err := crawler.ListJobs(&crawl4ai.ListJobsOptions{
 })
 
 // Get job status
-job, err := crawler.GetJob(jobID, false)
+job, err := crawler.GetJob(jobID)
 
-// Wait for job
-job, err := crawler.WaitJob(jobID, 2*time.Second, 5*time.Minute, true)
+// Wait for job completion
+job, err := crawler.WaitJob(jobID, 2*time.Second, 5*time.Minute)
+
+// Get download URL for results (after job completes)
+downloadURL, err := crawler.DownloadURL(jobID, 3600) // 1 hour expiry
 
 // Cancel job
 err := crawler.CancelJob(jobID)

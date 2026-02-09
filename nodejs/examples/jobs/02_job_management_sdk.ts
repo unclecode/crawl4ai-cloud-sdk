@@ -36,14 +36,16 @@ async function main(): Promise<void> {
     console.log(`URLs: ${job.urlsCount}`);
     console.log(`Created: ${job.createdAt}`);
 
-    // Wait for job and get results
+    // Wait for job completion
     console.log('\n=== Wait for Job ===');
     const completedJob = await crawler.waitJob(result.id, {
       pollInterval: 2,
-      includeResults: true,
     });
     console.log(`Final Status: ${completedJob.status}`);
     console.log(`Progress: ${completedJob.progress.completed}/${completedJob.progress.total}`);
+    if (completedJob.downloadUrl) {
+      console.log(`Download URL: ${completedJob.downloadUrl}`);
+    }
 
     // Cancel a job (create another one first)
     console.log('\n=== Cancel Job ===');

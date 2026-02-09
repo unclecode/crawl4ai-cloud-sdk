@@ -77,7 +77,9 @@ def main():
                 if status_data['status'] in ['completed', 'partial', 'failed']:
                     print(f"\n=== JOB COMPLETE ===")
                     print(f"Final status: {status_data['status']}")
-                    print(f"Results available at: /v1/crawl/jobs/{job_id}?include_results=true")
+                    print(f"Download results: /v1/crawl/jobs/{job_id}/download")
+                    if status_data.get('download_url'):
+                        print(f"Direct URL: {status_data['download_url']}")
                     break
             else:
                 print("\nTimeout: Job did not complete in time")

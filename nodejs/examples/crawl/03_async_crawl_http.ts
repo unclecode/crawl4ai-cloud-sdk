@@ -82,7 +82,10 @@ async function main(): Promise<void> {
       if (['completed', 'partial', 'failed'].includes(statusData.status)) {
         console.log('\n=== JOB COMPLETE ===');
         console.log(`Final status: ${statusData.status}`);
-        console.log(`Results available at: /v1/crawl/jobs/${jobId}?include_results=true`);
+        console.log(`Download results: /v1/crawl/jobs/${jobId}/download`);
+        if (statusData.download_url) {
+          console.log(`Direct URL: ${statusData.download_url}`);
+        }
         return;
       }
     }

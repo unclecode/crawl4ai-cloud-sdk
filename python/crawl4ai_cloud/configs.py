@@ -288,6 +288,9 @@ class BrowserConfig:
         )
         result = await crawler.run(url, browser_config=browser_config)
     """
+    # Browser profile (cloud-only)
+    profile_id: Optional[str] = None
+
     # Browser settings
     headless: bool = True
     browser_type: str = "chromium"

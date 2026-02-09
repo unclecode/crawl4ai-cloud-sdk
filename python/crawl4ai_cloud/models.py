@@ -101,7 +101,7 @@ class CrawlJob:
             data: API response dictionary
             convert_results: If True, convert results to CrawlResult objects
         """
-        progress_data = data.get("progress", {})
+        progress_data = data.get("progress") or {}
         progress = JobProgress(
             total=progress_data.get("total", 0),
             completed=progress_data.get("completed", 0),
@@ -159,8 +159,8 @@ class DeepCrawlResult:
     status: str
     strategy: str
     discovered_count: int
-    queued_urls: int
-    created_at: str
+    queued_urls: int = 0
+    created_at: str = ""
     urls: Optional[List[ScanUrlInfo]] = None
     html_download_url: Optional[str] = None
     cache_expires_at: Optional[str] = None

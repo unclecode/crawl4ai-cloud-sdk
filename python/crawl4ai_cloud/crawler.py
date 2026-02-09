@@ -540,53 +540,54 @@ class AsyncWebCrawler:
             raise ValueError("Provide either 'url' or 'source_job', not both")
 
         # Build request body
-        body: Dict[str, Any] = {
-            "strategy": strategy,
-            "crawl_strategy": crawl_strategy,
-            "priority": priority,
-        }
+        body: Dict[str, Any] = {}
 
-        if url:
-            body["url"] = url
         if source_job:
+            # Phase 2: extraction from cached HTML — only send source_job_id
             body["source_job_id"] = source_job
+        else:
+            # Phase 1: URL-based discovery — include scan parameters
+            body["url"] = url
+            body["strategy"] = strategy
+            body["crawl_strategy"] = crawl_strategy
+            body["priority"] = priority
 
-        # Tree strategy options
-        if strategy in ("bfs", "dfs", "best_first"):
-            body["max_depth"] = max_depth
-            body["max_urls"] = max_urls
+            # Tree strategy options
+            if strategy in ("bfs", "dfs", "best_first"):
+                body["max_depth"] = max_depth
+                body["max_urls"] = max_urls
 
-            # Build filters from include_patterns/exclude_patterns or use provided filters
-            effective_filters = filters.copy() if filters else {}
-            if include_patterns:
-                effective_filters["include_patterns"] = include_patterns
-            if exclude_patterns:
-                effective_filters["exclude_patterns"] = exclude_patterns
-            if effective_filters:
-                body["filters"] = effective_filters
+                # Build filters from include_patterns/exclude_patterns or use provided filters
+                effective_filters = filters.copy() if filters else {}
+                if include_patterns:
+                    effective_filters["include_patterns"] = include_patterns
+                if exclude_patterns:
+                    effective_filters["exclude_patterns"] = exclude_patterns
+                if effective_filters:
+                    body["filters"] = effective_filters
 
-            if scorers:
-                body["scorers"] = scorers
-            if scan_only:
-                body["scan_only"] = True
-            if include_html:
-                body["include_html"] = True
+                if scorers:
+                    body["scorers"] = scorers
+                if scan_only:
+                    body["scan_only"] = True
+                if include_html:
+                    body["include_html"] = True
 
-        # Map strategy options
-        if strategy == "map":
-            seeding_config: Dict[str, Any] = {
-                "source": source,
-                "pattern": pattern,
-            }
-            if max_urls:
-                seeding_config["max_urls"] = max_urls
-            if query:
-                seeding_config["query"] = query
-            if score_threshold is not None:
-                seeding_config["score_threshold"] = score_threshold
-            body["seeding_config"] = seeding_config
+            # Map strategy options
+            if strategy == "map":
+                seeding_config: Dict[str, Any] = {
+                    "source": source,
+                    "pattern": pattern,
+                }
+                if max_urls:
+                    seeding_config["max_urls"] = max_urls
+                if query:
+                    seeding_config["query"] = query
+                if score_threshold is not None:
+                    seeding_config["score_threshold"] = score_threshold
+                body["seeding_config"] = seeding_config
 
-        # Add configs
+        # Shared parameters (apply to both URL crawl and source_job extraction)
         crawler_config = sanitize_crawler_config(config)
         if crawler_config:
             body["crawler_config"] = crawler_config
@@ -690,8 +691,10 @@ class AsyncWebCrawler:
         return DeepCrawlResult(
             job_id=job_id,
             status="cancelled",
-            strategy=data.get("strategy"),
+            strategy=data.get("strategy", "unknown"),
             discovered_count=data.get("discovered_urls", 0),
+            queued_urls=data.get("queued_urls", 0),
+            created_at=data.get("created_at", ""),
         )
 
     async def get_deep_crawl_status(self, job_id: str) -> DeepCrawlResult:

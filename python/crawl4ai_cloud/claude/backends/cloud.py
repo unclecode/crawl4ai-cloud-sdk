@@ -135,10 +135,10 @@ class CloudBackend:
         crawler = self._ensure_crawler()
         try:
             from crawl4ai_cloud import CrawlerRunConfig
-            # Build extraction_strategy dict for the cloud API
+            # Cloud API format: type is "json_css"/"json_xpath", schema at top level
             extraction = {
-                "type": "JsonCssExtractionStrategy" if schema_type.lower() == "css" else "JsonXPathExtractionStrategy",
-                "params": {"schema": schema},
+                "type": "json_css" if schema_type.lower() == "css" else "json_xpath",
+                "schema": schema,
             }
             config = CrawlerRunConfig(extraction_strategy=extraction)
             result = await crawler.run(url, config=config)

@@ -1,7 +1,9 @@
 """Cloud backend — wraps crawl4ai_cloud.AsyncWebCrawler."""
 from __future__ import annotations
 
+import io
 import json
+import zipfile
 from typing import Any, Dict, List, Optional
 
 from ..config import PluginConfig
@@ -100,10 +102,8 @@ class CloudBackend:
         # deep_crawl with wait=True can return CrawlJob or DeepCrawlResult
         from crawl4ai_cloud.models import CrawlJob, DeepCrawlResult
         if isinstance(result, CrawlJob):
-            pages = []
-            if result.results:
-                for r in result.results:
-                    pages.append(self._normalize_crawl_result(r))
+            # Results are stored in S3 as a ZIP — download and parse
+            pages = await self._download_crawl_results(result.id)
             return {
                 "pages_crawled": len(pages),
                 "results": pages,
@@ -114,6 +114,34 @@ class CloudBackend:
                 "pages_crawled": result.discovered_count,
                 "results": [{"url": u, "depth": 0} for u in result.discovered_urls],
             }
+
+    async def _download_crawl_results(self, job_id: str) -> List[dict]:
+        """Download results ZIP from S3 and parse each JSON file."""
+        import httpx
+
+        dl_url = await self._crawler.download_url(job_id)
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(dl_url, timeout=60.0)
+            resp.raise_for_status()
+
+        pages = []
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+            for name in sorted(zf.namelist()):
+                if not name.endswith(".json"):
+                    continue
+                data = json.loads(zf.read(name))
+                md = data.get("markdown", {})
+                raw = md.get("raw_markdown", "") if isinstance(md, dict) else str(md) if md else ""
+                fit = md.get("fit_markdown") if isinstance(md, dict) else None
+                pages.append({
+                    "url": data.get("url", ""),
+                    "markdown": raw,
+                    "fit_markdown": fit,
+                    "metadata": data.get("metadata", {}),
+                    "links": data.get("links", {}),
+                    "status_code": data.get("status_code"),
+                })
+        return pages
 
     @staticmethod
     def _normalize_crawl_result(result) -> dict:

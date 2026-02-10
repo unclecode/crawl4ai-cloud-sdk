@@ -128,14 +128,44 @@ async def job_status(job_id: str) -> str:
 
 
 @mcp.tool()
-async def fetch(download_url: str) -> str:
+async def fetch(download_url: str, save_to: Optional[str] = None) -> str:
     """Download and parse crawl results from a presigned S3 URL.
 
     Use this after a deep crawl job completes and job_status returns a download_url.
     Downloads the results ZIP, parses each page, and returns structured data.
+
+    IMPORTANT: Always set save_to to a file path (e.g. "/tmp/crawl_results.json")
+    for deep crawls. Results are often too large to return inline.
+    When save_to is set, full results are written to the file and a summary is returned.
     """
     result = await core.fetch_results(download_url)
-    return _json(result)
+    if not result.get("success") or not save_to:
+        return _json(result)
+
+    # Save full results to file, return summary
+    import os
+    os.makedirs(os.path.dirname(save_to) if os.path.dirname(save_to) else ".", exist_ok=True)
+    with open(save_to, "w") as f:
+        json.dump(result["data"], f, indent=2, default=str)
+
+    pages = result["data"].get("results", [])
+    summary = {
+        "success": True,
+        "data": {
+            "pages_crawled": result["data"].get("pages_crawled", len(pages)),
+            "saved_to": save_to,
+            "pages": [
+                {
+                    "url": p.get("url", ""),
+                    "markdown_length": len(p.get("markdown", "") or ""),
+                    "status_code": p.get("status_code"),
+                }
+                for p in pages
+            ],
+            "message": f"Full results saved to {save_to}. Read the file to access page content.",
+        },
+    }
+    return _json(summary)
 
 
 @mcp.tool()

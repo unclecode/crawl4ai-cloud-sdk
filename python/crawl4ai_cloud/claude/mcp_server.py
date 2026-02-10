@@ -31,7 +31,9 @@ async def crawl(
     """Crawl a web page and return its content as markdown.
 
     For a single page, returns markdown text, metadata, and links.
-    Set deep_crawl=True for multi-page crawling with configurable strategy/depth.
+    Set deep_crawl=True for multi-page crawling — returns immediately with a job_id.
+    Use job_status to poll progress, then fetch to download results when done.
+    For background polling, run: crawl4ai-poll --job-id <id> --api-key $CRAWL4AI_API_KEY
     """
     result = await core.crawl(
         url, deep_crawl=deep_crawl, strategy=strategy,
@@ -110,6 +112,29 @@ async def schema(
     describing what data to extract. Returns a reusable schema for the extract tool.
     """
     result = await core.schema(query=query, url=url, html=html, schema_type=schema_type)
+    return _json(result)
+
+
+@mcp.tool()
+async def job_status(job_id: str) -> str:
+    """Check the status of a deep crawl job.
+
+    Returns current status, progress, and download_url when the job is complete.
+    Use the download_url with the fetch tool to retrieve results.
+    For scan jobs (scan_*), may return a crawl_job_id to track next.
+    """
+    result = await core.job_status(job_id)
+    return _json(result)
+
+
+@mcp.tool()
+async def fetch(download_url: str) -> str:
+    """Download and parse crawl results from a presigned S3 URL.
+
+    Use this after a deep crawl job completes and job_status returns a download_url.
+    Downloads the results ZIP, parses each page, and returns structured data.
+    """
+    result = await core.fetch_results(download_url)
     return _json(result)
 
 

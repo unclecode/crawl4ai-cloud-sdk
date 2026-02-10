@@ -88,6 +88,7 @@ class CloudBackend:
 
     async def _deep_crawl(self, url: str, *, strategy, max_depth, max_pages,
                           include_patterns, exclude_patterns, bypass_cache) -> dict:
+        # Non-blocking: start crawl and return job info immediately
         result = await self._crawler.deep_crawl(
             url,
             strategy=strategy,
@@ -96,32 +97,82 @@ class CloudBackend:
             include_patterns=include_patterns,
             exclude_patterns=exclude_patterns,
             bypass_cache=bypass_cache,
-            wait=True,
+            wait=False,
             scan_only=False,
         )
-        # deep_crawl with wait=True can return CrawlJob or DeepCrawlResult
-        from crawl4ai_cloud.models import CrawlJob, DeepCrawlResult
-        if isinstance(result, CrawlJob):
-            # Results are stored in S3 as a ZIP — download and parse
-            pages = await self._download_crawl_results(result.id)
+        return {
+            "job_id": result.job_id,
+            "status": result.status if hasattr(result, "status") else "started",
+            "discovered_count": result.discovered_count if hasattr(result, "discovered_count") else 0,
+            "discovered_urls": (result.discovered_urls or [])[:20] if hasattr(result, "discovered_urls") else [],
+            "message": "Deep crawl started. Use job_status tool to check progress, or run crawl4ai-poll in background.",
+        }
+
+    # ------------------------------------------------------------------
+    # job_status
+    # ------------------------------------------------------------------
+    async def job_status(self, job_id: str) -> dict:
+        crawler = self._ensure_crawler()
+        try:
+            if job_id.startswith("scan_"):
+                result = await crawler.get_deep_crawl_status(job_id)
+                data = {
+                    "job_id": job_id,
+                    "status": result.status if hasattr(result, "status") else "unknown",
+                    "discovered_count": result.discovered_count if hasattr(result, "discovered_count") else 0,
+                }
+                if hasattr(result, "crawl_job_id") and result.crawl_job_id:
+                    data["crawl_job_id"] = result.crawl_job_id
+                    data["message"] = f"Scan complete. Crawl job started: {result.crawl_job_id}. Poll that job_id for final results."
+                if hasattr(result, "is_complete") and result.is_complete:
+                    data["is_complete"] = True
+                return data
+            else:
+                job = await crawler.get_job(job_id)
+                data = {
+                    "job_id": job_id,
+                    "status": job.status if hasattr(job, "status") else "unknown",
+                }
+                if hasattr(job, "progress") and job.progress:
+                    prog = job.progress
+                    if hasattr(prog, "total"):
+                        data["progress"] = {
+                            "total": prog.total,
+                            "completed": prog.completed if hasattr(prog, "completed") else 0,
+                            "failed": prog.failed if hasattr(prog, "failed") else 0,
+                        }
+                    else:
+                        data["progress"] = str(prog)
+                is_complete = (hasattr(job, "is_complete") and job.is_complete) or \
+                              (hasattr(job, "status") and job.status in ("completed", "done"))
+                if is_complete:
+                    data["is_complete"] = True
+                    dl_url = await crawler.download_url(job_id)
+                    data["download_url"] = dl_url
+                    data["message"] = "Job complete. Use fetch tool with the download_url to get results."
+                return data
+        except Exception as e:
+            raise BackendError(f"Job status check failed: {e}") from e
+
+    # ------------------------------------------------------------------
+    # fetch_results
+    # ------------------------------------------------------------------
+    async def fetch_results(self, download_url: str) -> dict:
+        try:
+            pages = await self._download_from_url(download_url)
             return {
                 "pages_crawled": len(pages),
                 "results": pages,
             }
-        else:
-            # DeepCrawlResult (scan completed but maybe no crawl results inline)
-            return {
-                "pages_crawled": result.discovered_count,
-                "results": [{"url": u, "depth": 0} for u in result.discovered_urls],
-            }
+        except Exception as e:
+            raise BackendError(f"Fetch results failed: {e}") from e
 
-    async def _download_crawl_results(self, job_id: str) -> List[dict]:
-        """Download results ZIP from S3 and parse each JSON file."""
+    async def _download_from_url(self, url: str) -> List[dict]:
+        """Download results ZIP from a presigned URL and parse each JSON file."""
         import httpx
 
-        dl_url = await self._crawler.download_url(job_id)
         async with httpx.AsyncClient() as client:
-            resp = await client.get(dl_url, timeout=60.0)
+            resp = await client.get(url, timeout=60.0)
             resp.raise_for_status()
 
         pages = []

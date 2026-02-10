@@ -47,7 +47,7 @@ async def reset_backend() -> Dict[str, Any]:
 
 
 # ======================================================================
-# 7 tool functions — each returns {"success": bool, "data"|"error": ...}
+# 9 tool functions — each returns {"success": bool, "data"|"error": ...}
 # ======================================================================
 
 async def crawl(
@@ -159,6 +159,30 @@ async def profile_list() -> Dict[str, Any]:
     try:
         backend = await _get_backend()
         data = await backend.list_profiles()
+        return {"success": True, "data": data}
+    except BackendError as e:
+        return {"success": False, "error": e.message}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+async def job_status(job_id: str) -> Dict[str, Any]:
+    """Check the status of a deep crawl job."""
+    try:
+        backend = await _get_backend()
+        data = await backend.job_status(job_id)
+        return {"success": True, "data": data}
+    except BackendError as e:
+        return {"success": False, "error": e.message}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+async def fetch_results(download_url: str) -> Dict[str, Any]:
+    """Download and parse crawl results from a presigned URL."""
+    try:
+        backend = await _get_backend()
+        data = await backend.fetch_results(download_url)
         return {"success": True, "data": data}
     except BackendError as e:
         return {"success": False, "error": e.message}

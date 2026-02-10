@@ -56,6 +56,7 @@ local = ["crawl4ai"]
 
 [project.scripts]
 crawl4ai-mcp = "crawl4ai_cloud.claude.mcp_server:main"
+crawl4ai-poll = "crawl4ai_cloud.claude.poll:main"
 
 [tool.setuptools]
 packages = ["crawl4ai_cloud", "crawl4ai_cloud.claude", "crawl4ai_cloud.claude.backends"]

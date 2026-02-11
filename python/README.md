@@ -7,6 +7,15 @@ Lightweight Python SDK for [Crawl4AI Cloud](https://api.crawl4ai.com). Mirrors t
 [![PyPI version](https://badge.fury.io/py/crawl4ai-cloud-sdk.svg)](https://badge.fury.io/py/crawl4ai-cloud-sdk)
 [![Python Version](https://img.shields.io/pypi/pyversions/crawl4ai-cloud-sdk)](https://pypi.org/project/crawl4ai-cloud-sdk/)
 
+## Claude Code Plugin
+
+Use Crawl4AI directly inside [Claude Code](https://claude.com/claude-code) with 9 built-in tools — no Python needed. See the [plugin README](./claude-plugin/README.md) for details.
+
+```
+/plugin marketplace add unclecode/crawl4ai-cloud-sdk
+/plugin install crawl4ai@crawl4ai-claude-plugins
+```
+
 ## Installation
 
 ```bash

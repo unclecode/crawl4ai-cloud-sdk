@@ -1,0 +1,25 @@
+{
+  "name": "crawl4ai-claude-plugins",
+  "owner": {
+    "name": "Crawl4AI",
+    "email": "unclecode@kidocode.com"
+  },
+  "metadata": {
+    "description": "Web crawling, extraction, screenshots, and URL discovery powered by Crawl4AI"
+  },
+  "plugins": [
+    {
+      "name": "crawl4ai",
+      "source": "./python/claude-plugin",
+      "description": "Web crawling, extraction, screenshots, and URL discovery. Free local mode + cloud API. After installing, run /crawl4ai:setup to configure.",
+      "version": "1.0.0",
+      "author": { "name": "Crawl4AI", "email": "unclecode@kidocode.com" },
+      "homepage": "https://crawl4ai.com",
+      "repository": "https://github.com/unclecode/crawl4ai-cloud-sdk",
+      "license": "Apache-2.0",
+      "keywords": ["crawling", "scraping", "extraction", "web", "mcp"],
+      "category": "development",
+      "tags": ["web-scraping", "data-extraction", "mcp-server"]
+    }
+  ]
+}

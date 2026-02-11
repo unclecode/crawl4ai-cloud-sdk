@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "crawl4ai": {
-      "command": "python3",
-      "args": ["-m", "crawl4ai_cloud.claude.mcp_server"]
+      "command": "bash",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/start.sh"]
     }
   }
 }

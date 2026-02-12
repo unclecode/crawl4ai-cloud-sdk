@@ -78,3 +78,6 @@ logs/
 # Test coverage
 coverage/
 .nyc_output/
+
+# Video/Apps (local development)
+video/

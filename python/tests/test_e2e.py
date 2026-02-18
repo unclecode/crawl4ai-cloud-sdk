@@ -545,7 +545,7 @@ class TestProxyConfig:
         """Test ProxyConfig dataclass."""
         proxy = ProxyConfig(mode="residential", country="UK")
         result = normalize_proxy(proxy)
-        assert result == {"mode": "residential", "country": "UK"}
+        assert result == {"mode": "residential", "country": "UK", "use_proxy": True}
 
     def test_normalize_proxy_none(self):
         """Test None proxy returns None."""

@@ -366,41 +366,45 @@ export class AsyncWebCrawler {
     }
 
     // Build request body
-    const body: Record<string, unknown> = {
-      strategy,
-      crawl_strategy: crawlStrategy,
-      priority,
-    };
+    const body: Record<string, unknown> = {};
 
-    if (url) body.url = url;
-    if (sourceJob) body.source_job_id = sourceJob;
+    if (sourceJob) {
+      // Phase 2: extraction from cached HTML — only send source_job_id
+      body.source_job_id = sourceJob;
+    } else {
+      // Phase 1: URL-based discovery — include scan parameters
+      body.url = url;
+      body.strategy = strategy;
+      body.crawl_strategy = crawlStrategy;
+      body.priority = priority;
 
-    // Tree strategy options
-    if (['bfs', 'dfs', 'best_first'].includes(strategy)) {
-      body.max_depth = maxDepth;
-      body.max_urls = maxUrls;
+      // Tree strategy options
+      if (['bfs', 'dfs', 'best_first'].includes(strategy)) {
+        body.max_depth = maxDepth;
+        body.max_urls = maxUrls;
 
-      // Build filters from includePatterns/excludePatterns or use provided filters
-      const effectiveFilters: Record<string, unknown> = filters ? { ...filters } : {};
-      if (includePatterns) effectiveFilters.include_patterns = includePatterns;
-      if (excludePatterns) effectiveFilters.exclude_patterns = excludePatterns;
-      if (Object.keys(effectiveFilters).length > 0) body.filters = effectiveFilters;
+        // Build filters from includePatterns/excludePatterns or use provided filters
+        const effectiveFilters: Record<string, unknown> = filters ? { ...filters } : {};
+        if (includePatterns) effectiveFilters.include_patterns = includePatterns;
+        if (excludePatterns) effectiveFilters.exclude_patterns = excludePatterns;
+        if (Object.keys(effectiveFilters).length > 0) body.filters = effectiveFilters;
 
-      if (scorers) body.scorers = scorers;
-      if (scanOnly) body.scan_only = true;
-      if (includeHtml) body.include_html = true;
-    }
+        if (scorers) body.scorers = scorers;
+        if (scanOnly) body.scan_only = true;
+        if (includeHtml) body.include_html = true;
+      }
 
-    // Map strategy options
-    if (strategy === 'map') {
-      const seedingConfig: Record<string, unknown> = {
-        source,
-        pattern,
-      };
-      if (maxUrls) seedingConfig.max_urls = maxUrls;
-      if (query) seedingConfig.query = query;
-      if (scoreThreshold !== undefined) seedingConfig.score_threshold = scoreThreshold;
-      body.seeding_config = seedingConfig;
+      // Map strategy options
+      if (strategy === 'map') {
+        const seedingConfig: Record<string, unknown> = {
+          source,
+          pattern,
+        };
+        if (maxUrls) seedingConfig.max_urls = maxUrls;
+        if (query) seedingConfig.query = query;
+        if (scoreThreshold !== undefined) seedingConfig.score_threshold = scoreThreshold;
+        body.seeding_config = seedingConfig;
+      }
     }
 
     // Add configs

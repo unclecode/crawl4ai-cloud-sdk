@@ -5,6 +5,8 @@ type ProxyConfig struct {
 	Mode          string `json:"mode"`
 	Country       string `json:"country,omitempty"`
 	StickySession bool   `json:"sticky_session,omitempty"`
+	UseProxy      bool   `json:"use_proxy,omitempty"`
+	SkipDirect    bool   `json:"skip_direct,omitempty"`
 }
 
 // JobProgress represents async job progress.

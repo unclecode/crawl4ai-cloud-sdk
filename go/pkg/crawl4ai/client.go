@@ -14,7 +14,7 @@ import (
 
 const (
 	// Version is the SDK version.
-	Version = "0.1.1"
+	Version = "0.2.5"
 
 	// DefaultBaseURL is the default API base URL.
 	DefaultBaseURL = "https://api.crawl4ai.com"

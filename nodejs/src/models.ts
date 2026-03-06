@@ -9,6 +9,8 @@ export interface ProxyConfig {
   mode: 'none' | 'datacenter' | 'residential' | 'auto';
   country?: string;
   sticky_session?: boolean;
+  use_proxy?: boolean;
+  skip_direct?: boolean;
 }
 
 /**

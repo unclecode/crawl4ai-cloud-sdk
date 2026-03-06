@@ -14,6 +14,16 @@ class ProxyConfig:
     - "residential": Premium residential IPs (5x credits)
     - "auto": Smart selection based on target URL
 
+    Attributes:
+        mode: Proxy mode (see above).
+        country: ISO country code for geo-targeting (e.g. "US", "DE").
+        sticky_session: Use the same IP for all URLs in a batch request.
+        use_proxy: Whether to route through a proxy at all. Set to False
+            to force a direct connection regardless of server defaults.
+        skip_direct: Skip the initial direct-connection attempt and go
+            straight to the proxy. Useful for sites known to block
+            datacenter IPs.
+
     Examples:
         # Datacenter proxy
         proxy = ProxyConfig(mode="datacenter")
@@ -23,18 +33,31 @@ class ProxyConfig:
 
         # Deep crawl with sticky session (same IP for all URLs)
         proxy = ProxyConfig(mode="datacenter", sticky_session=True)
+
+        # Force direct connection (no proxy)
+        proxy = ProxyConfig(use_proxy=False)
+
+        # Skip the direct attempt, go straight to proxy
+        proxy = ProxyConfig(mode="datacenter", skip_direct=True)
     """
     mode: str = "none"
     country: Optional[str] = None
     sticky_session: bool = False
+    use_proxy: bool = True
+    skip_direct: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict for API request."""
-        result: Dict[str, Any] = {"mode": self.mode}
+        result: Dict[str, Any] = {
+            "mode": self.mode,
+            "use_proxy": self.use_proxy,
+        }
         if self.country:
             result["country"] = self.country
         if self.sticky_session:
             result["sticky_session"] = True
+        if self.skip_direct:
+            result["skip_direct"] = True
         return result
 
 

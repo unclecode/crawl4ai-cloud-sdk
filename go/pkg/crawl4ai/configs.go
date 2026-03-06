@@ -288,6 +288,12 @@ func NormalizeProxy(proxy interface{}) (map[string]interface{}, error) {
 		if p.StickySession {
 			result["sticky_session"] = true
 		}
+		if p.UseProxy {
+			result["use_proxy"] = true
+		}
+		if p.SkipDirect {
+			result["skip_direct"] = true
+		}
 		return result, nil
 	case ProxyConfig:
 		result := map[string]interface{}{"mode": p.Mode}
@@ -296,6 +302,12 @@ func NormalizeProxy(proxy interface{}) (map[string]interface{}, error) {
 		}
 		if p.StickySession {
 			result["sticky_session"] = true
+		}
+		if p.UseProxy {
+			result["use_proxy"] = true
+		}
+		if p.SkipDirect {
+			result["skip_direct"] = true
 		}
 		return result, nil
 	case map[string]interface{}:

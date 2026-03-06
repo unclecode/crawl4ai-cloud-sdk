@@ -324,74 +324,74 @@ func (c *AsyncWebCrawler) DeepCrawl(url string, opts *DeepCrawlOptions) (*DeepCr
 		maxURLs = 100
 	}
 
-	body := map[string]interface{}{
-		"strategy":       strategy,
-		"crawl_strategy": crawlStrategy,
-		"priority":       priority,
-	}
+	body := map[string]interface{}{}
 
-	if url != "" {
-		body["url"] = url
-	}
 	if opts.SourceJob != "" {
+		// Phase 2: extraction from cached HTML — only send source_job_id
 		body["source_job_id"] = opts.SourceJob
-	}
+	} else {
+		// Phase 1: URL-based discovery — include scan parameters
+		body["url"] = url
+		body["strategy"] = strategy
+		body["crawl_strategy"] = crawlStrategy
+		body["priority"] = priority
 
-	// Tree strategy options
-	if strategy == "bfs" || strategy == "dfs" || strategy == "best_first" {
-		body["max_depth"] = maxDepth
-		body["max_urls"] = maxURLs
+		// Tree strategy options
+		if strategy == "bfs" || strategy == "dfs" || strategy == "best_first" {
+			body["max_depth"] = maxDepth
+			body["max_urls"] = maxURLs
 
-		// Build filters from IncludePatterns/ExcludePatterns or use provided filters
-		effectiveFilters := make(map[string]interface{})
-		if opts.Filters != nil {
-			for k, v := range opts.Filters {
-				effectiveFilters[k] = v
+			// Build filters from IncludePatterns/ExcludePatterns or use provided filters
+			effectiveFilters := make(map[string]interface{})
+			if opts.Filters != nil {
+				for k, v := range opts.Filters {
+					effectiveFilters[k] = v
+				}
+			}
+			if len(opts.IncludePatterns) > 0 {
+				effectiveFilters["include_patterns"] = opts.IncludePatterns
+			}
+			if len(opts.ExcludePatterns) > 0 {
+				effectiveFilters["exclude_patterns"] = opts.ExcludePatterns
+			}
+			if len(effectiveFilters) > 0 {
+				body["filters"] = effectiveFilters
+			}
+
+			if opts.Scorers != nil {
+				body["scorers"] = opts.Scorers
+			}
+			if opts.ScanOnly {
+				body["scan_only"] = true
+			}
+			if opts.IncludeHTML {
+				body["include_html"] = true
 			}
 		}
-		if len(opts.IncludePatterns) > 0 {
-			effectiveFilters["include_patterns"] = opts.IncludePatterns
-		}
-		if len(opts.ExcludePatterns) > 0 {
-			effectiveFilters["exclude_patterns"] = opts.ExcludePatterns
-		}
-		if len(effectiveFilters) > 0 {
-			body["filters"] = effectiveFilters
-		}
 
-		if opts.Scorers != nil {
-			body["scorers"] = opts.Scorers
+		// Map strategy options
+		if strategy == "map" {
+			seedingConfig := map[string]interface{}{
+				"source":  opts.Source,
+				"pattern": opts.Pattern,
+			}
+			if opts.Source == "" {
+				seedingConfig["source"] = "sitemap"
+			}
+			if opts.Pattern == "" {
+				seedingConfig["pattern"] = "*"
+			}
+			if maxURLs > 0 {
+				seedingConfig["max_urls"] = maxURLs
+			}
+			if opts.Query != "" {
+				seedingConfig["query"] = opts.Query
+			}
+			if opts.ScoreThreshold != nil {
+				seedingConfig["score_threshold"] = *opts.ScoreThreshold
+			}
+			body["seeding_config"] = seedingConfig
 		}
-		if opts.ScanOnly {
-			body["scan_only"] = true
-		}
-		if opts.IncludeHTML {
-			body["include_html"] = true
-		}
-	}
-
-	// Map strategy options
-	if strategy == "map" {
-		seedingConfig := map[string]interface{}{
-			"source":  opts.Source,
-			"pattern": opts.Pattern,
-		}
-		if opts.Source == "" {
-			seedingConfig["source"] = "sitemap"
-		}
-		if opts.Pattern == "" {
-			seedingConfig["pattern"] = "*"
-		}
-		if maxURLs > 0 {
-			seedingConfig["max_urls"] = maxURLs
-		}
-		if opts.Query != "" {
-			seedingConfig["query"] = opts.Query
-		}
-		if opts.ScoreThreshold != nil {
-			seedingConfig["score_threshold"] = *opts.ScoreThreshold
-		}
-		body["seeding_config"] = seedingConfig
 	}
 
 	// Add configs

@@ -505,14 +505,7 @@ export class AsyncWebCrawler {
    */
   async cancelDeepCrawl(jobId: string): Promise<DeepCrawlResult> {
     const data = await this.http.post(`/v1/crawl/deep/jobs/${jobId}/cancel`, {});
-    return {
-      jobId,
-      status: 'cancelled',
-      strategy: (data.strategy as string) || 'unknown',
-      discoveredCount: (data.discovered_urls as number) || 0,
-      queuedUrls: 0,
-      createdAt: '',
-    };
+    return deepCrawlResultFromDict(data);
   }
 
   /**

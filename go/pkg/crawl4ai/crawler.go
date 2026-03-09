@@ -491,22 +491,7 @@ func (c *AsyncWebCrawler) CancelDeepCrawl(jobID string) (*DeepCrawlResult, error
 		return nil, err
 	}
 
-	discoveredCount := 0
-	if v, ok := data["discovered_urls"].(float64); ok {
-		discoveredCount = int(v)
-	}
-
-	strategy := ""
-	if v, ok := data["strategy"].(string); ok {
-		strategy = v
-	}
-
-	return &DeepCrawlResult{
-		JobID:           jobID,
-		Status:          "cancelled",
-		Strategy:        strategy,
-		DiscoveredCount: discoveredCount,
-	}, nil
+	return DeepCrawlResultFromMap(data), nil
 }
 
 // GetDeepCrawlStatus gets the status of a deep crawl job.

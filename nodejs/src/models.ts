@@ -171,7 +171,7 @@ export function deepCrawlResultFromDict(data: Record<string, unknown>): DeepCraw
  * Check if deep crawl result is complete.
  */
 export function isDeepCrawlComplete(result: DeepCrawlResult): boolean {
-  return ['completed', 'failed'].includes(result.status);
+  return ['completed', 'failed', 'cancelled'].includes(result.status);
 }
 
 /**

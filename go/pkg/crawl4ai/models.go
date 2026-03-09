@@ -261,7 +261,7 @@ type DeepCrawlResult struct {
 
 // IsComplete checks if deep crawl is complete.
 func (d *DeepCrawlResult) IsComplete() bool {
-	return d.Status == "completed" || d.Status == "failed"
+	return d.Status == "completed" || d.Status == "failed" || d.Status == "cancelled"
 }
 
 // DeepCrawlResultFromMap creates a DeepCrawlResult from API response map.

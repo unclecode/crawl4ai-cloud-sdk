@@ -204,7 +204,7 @@ class DeepCrawlResult:
     @property
     def is_complete(self) -> bool:
         """Check if the scan job has finished."""
-        return self.status in ("completed", "failed")
+        return self.status in ("completed", "failed", "cancelled")
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "DeepCrawlResult":

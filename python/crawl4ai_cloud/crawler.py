@@ -688,14 +688,7 @@ class AsyncWebCrawler:
             ```
         """
         data = await self._http.request("POST", f"/v1/crawl/deep/jobs/{job_id}/cancel")
-        return DeepCrawlResult(
-            job_id=job_id,
-            status="cancelled",
-            strategy=data.get("strategy", "unknown"),
-            discovered_count=data.get("discovered_urls", 0),
-            queued_urls=data.get("queued_urls", 0),
-            created_at=data.get("created_at", ""),
-        )
+        return DeepCrawlResult.from_dict(data)
 
     async def get_deep_crawl_status(self, job_id: str) -> DeepCrawlResult:
         """

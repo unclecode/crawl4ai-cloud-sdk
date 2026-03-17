@@ -158,6 +158,8 @@ type CrawlResult struct {
 	Tables           []interface{}          `json:"tables,omitempty"`
 	RedirectedURL    string                 `json:"redirected_url,omitempty"`
 	CrawlStrategy    string                 `json:"crawl_strategy,omitempty"`
+	// DownloadedFiles contains presigned S3 URLs for file downloads (CSV, PDF, XLSX, etc.)
+	DownloadedFiles []string `json:"downloaded_files,omitempty"`
 	// ID is the job ID for async results (use with DownloadURL())
 	ID string `json:"id,omitempty"`
 	// Usage contains resource usage metrics
@@ -218,6 +220,16 @@ func CrawlResultFromMap(data map[string]interface{}) *CrawlResult {
 	}
 	if v, ok := data["tables"].([]interface{}); ok {
 		result.Tables = v
+	}
+
+	// Parse downloaded_files (presigned S3 URLs for file downloads)
+	if files, ok := data["downloaded_files"].([]interface{}); ok {
+		result.DownloadedFiles = make([]string, 0, len(files))
+		for _, f := range files {
+			if s, ok := f.(string); ok {
+				result.DownloadedFiles = append(result.DownloadedFiles, s)
+			}
+		}
 	}
 
 	// Handle both string (async results) and object (sync results) formats

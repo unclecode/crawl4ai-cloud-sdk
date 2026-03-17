@@ -400,6 +400,8 @@ export interface CrawlResult {
   redirectedUrl?: string;
   llmUsage?: LLMUsage;
   crawlStrategy?: string;
+  /** Presigned S3 URLs for file downloads (CSV, PDF, XLSX, etc.) */
+  downloadedFiles?: string[];
   /** Job ID for async results (use with downloadUrl()) */
   id?: string;
   /** Resource usage metrics */
@@ -459,6 +461,7 @@ export function crawlResultFromDict(data: Record<string, unknown>): CrawlResult 
     redirectedUrl: data.redirected_url as string | undefined,
     llmUsage,
     crawlStrategy: data.crawl_strategy as string | undefined,
+    downloadedFiles: data.downloaded_files as string[] | undefined,
     usage: data.usage ? usageFromDict(data.usage as Record<string, unknown>) : undefined,
   };
 }

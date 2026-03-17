@@ -112,6 +112,8 @@ var browserConfigSanitizeFields = []string{
 	"browser_mode",
 	"user_data_dir",
 	"chrome_channel",
+	"accept_downloads",  // Cloud handles file downloads automatically via Content-Type detection
+	"downloads_path",    // Cloud returns presigned S3 URLs in DownloadedFiles instead
 }
 
 // SanitizeCrawlerConfig removes cloud-controlled fields from config.

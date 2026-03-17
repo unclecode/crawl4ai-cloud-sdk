@@ -477,6 +477,7 @@ class CrawlResult:
     crawl_strategy: Optional[str] = None
     proxy_mode: Optional[str] = None  # Effective proxy mode: "none", "datacenter", "residential"
     proxy_used: Optional[str] = None  # Proxy provider identifier
+    downloaded_files: Optional[List[str]] = None  # Presigned S3 URLs for file downloads (CSV, PDF, XLSX, etc.)
     id: Optional[str] = None  # Job ID for async results (use with download_url())
     usage: Optional[Usage] = None  # Resource usage metrics
 
@@ -529,5 +530,6 @@ class CrawlResult:
             crawl_strategy=data.get("crawl_strategy"),
             proxy_mode=data.get("proxy_mode"),
             proxy_used=data.get("proxy_used"),
+            downloaded_files=data.get("downloaded_files"),
             usage=Usage.from_dict(data["usage"]) if data.get("usage") else None,
         )

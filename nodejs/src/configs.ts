@@ -40,6 +40,10 @@ const BROWSER_CONFIG_SANITIZE_FIELDS = [
   'userDataDir',
   'chrome_channel',
   'chromeChannel',
+  'accept_downloads',  // Cloud handles file downloads automatically via Content-Type detection
+  'acceptDownloads',
+  'downloads_path',    // Cloud returns presigned S3 URLs in downloadedFiles instead
+  'downloadsPath',
 ];
 
 /**

@@ -124,17 +124,36 @@ npm install crawl4ai-cloud
 go get github.com/unclecode/crawl4ai-cloud-sdk/go
 ```
 
-### 3. Crawl
+### 3. Claude Code Plugin
+
+If you use Claude Code, install the plugin for the best experience. Claude automatically knows how to crawl, extract, and screenshot.
+
+```
+/plugin marketplace add unclecode/crawl4ai-cloud-sdk
+/plugin install crawl4ai
+/crawl4ai:setup
+```
+
+Then just tell Claude what you need: *"Extract all products from https://books.toscrape.com"* -- it handles the rest.
+
+### 4. Crawl
 
 ```python
 from crawl4ai_cloud import AsyncWebCrawler
 
 async with AsyncWebCrawler(api_key="sk_live_...") as crawler:
+    # Simple wrapper endpoints
+    md = await crawler.markdown("https://example.com")
+    ss = await crawler.screenshot("https://example.com")
+    data = await crawler.extract("https://example.com", query="get products")
+    urls = await crawler.map("https://example.com")
+
+    # Full power mode (unchanged from OSS)
     result = await crawler.run("https://example.com")
     print(result.markdown.raw_markdown)
 ```
 
-**Full SDK documentation:** [SDK.md](./SDK.md)
+**SDK documentation:** [Python](./python/README.md) | [Node.js](./nodejs/README.md) | [Go](./go/README.md)
 
 ---
 

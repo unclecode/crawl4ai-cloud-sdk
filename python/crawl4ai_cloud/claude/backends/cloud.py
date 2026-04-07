@@ -78,13 +78,26 @@ class CloudBackend:
 
     async def _single_crawl(self, url: str, *, css_selector=None,
                             word_count_threshold=200, bypass_cache=False) -> dict:
-        from crawl4ai_cloud import CrawlerRunConfig
-        config = CrawlerRunConfig(
-            css_selector=css_selector,
-            word_count_threshold=word_count_threshold,
+        # Use the new wrapper endpoint for simple crawls
+        crawler_config = {}
+        if css_selector:
+            crawler_config["css_selector"] = css_selector
+        if word_count_threshold != 200:
+            crawler_config["word_count_threshold"] = word_count_threshold
+
+        result = await self._crawler.markdown(
+            url, strategy="browser", fit=True,
+            include=["links", "media", "metadata"],
+            crawler_config=crawler_config if crawler_config else None,
+            bypass_cache=bypass_cache,
         )
-        result = await self._crawler.run(url, config=config, bypass_cache=bypass_cache)
-        return self._normalize_crawl_result(result)
+        return {
+            "url": result.url,
+            "markdown": result.markdown,
+            "fit_markdown": result.fit_markdown,
+            "metadata": result.metadata or {},
+            "links": result.links or {},
+        }
 
     async def _deep_crawl(self, url: str, *, strategy, max_depth, max_pages,
                           include_patterns, exclude_patterns, bypass_cache) -> dict:
@@ -210,27 +223,21 @@ class CloudBackend:
     # ------------------------------------------------------------------
     # extract
     # ------------------------------------------------------------------
-    async def extract(self, url: str, *, schema: dict, schema_type: str = "css") -> dict:
+    async def extract(self, url: str, *, schema: dict = None, schema_type: str = "css",
+                      query: str = None, method: str = "auto") -> dict:
         crawler = self._ensure_crawler()
         try:
-            from crawl4ai_cloud import CrawlerRunConfig
-            # Cloud API format: type is "json_css"/"json_xpath", schema at top level
-            extraction = {
-                "type": "json_css" if schema_type.lower() == "css" else "json_xpath",
-                "schema": schema,
-            }
-            config = CrawlerRunConfig(extraction_strategy=extraction)
-            result = await crawler.run(url, config=config)
-            extracted = []
-            if result.extracted_content:
-                try:
-                    extracted = json.loads(result.extracted_content)
-                except (json.JSONDecodeError, TypeError):
-                    extracted = [{"raw": result.extracted_content}]
+            # Use the new wrapper endpoint
+            result = await crawler.extract(
+                url, query=query, schema=schema,
+                method="schema" if schema else method,
+            )
             return {
                 "url": result.url,
-                "extracted": extracted if isinstance(extracted, list) else [extracted],
-                "items_count": len(extracted) if isinstance(extracted, list) else 1,
+                "extracted": result.data or [],
+                "items_count": len(result.data) if result.data else 0,
+                "method_used": result.method_used,
+                "schema_used": result.schema_used,
             }
         except BackendError:
             raise
@@ -245,24 +252,18 @@ class CloudBackend:
                        score_threshold: Optional[float] = None) -> dict:
         crawler = self._ensure_crawler()
         try:
-            result = await crawler.deep_crawl(
-                url,
-                strategy="map",
-                source=source,
-                pattern=pattern,
-                max_urls=max_urls,
-                query=query,
+            # Use the new /v1/map wrapper endpoint
+            result = await crawler.map(
+                url, max_urls=max_urls, query=query,
                 score_threshold=score_threshold,
-                scan_only=True,
-                wait=True,
             )
-            urls = result.discovered_urls if hasattr(result, 'discovered_urls') else []
+            urls = [{"url": u.url, "host": u.host, "score": u.relevance_score}
+                    for u in result.urls]
             return {
-                "domain": url,
+                "domain": result.domain,
                 "urls": urls,
-                "total_discovered": result.discovered_count if hasattr(result, 'discovered_count') else len(urls),
+                "total_discovered": result.total_urls,
                 "returned": len(urls),
-                "source": source,
             }
         except BackendError:
             raise
@@ -277,18 +278,18 @@ class CloudBackend:
                          full_page: bool = True) -> dict:
         crawler = self._ensure_crawler()
         try:
-            from crawl4ai_cloud import CrawlerRunConfig
-            config = CrawlerRunConfig(
-                screenshot=True,
-                screenshot_wait_for=wait_for,
-                scan_full_page=full_page,
+            # Use the new /v1/screenshot wrapper endpoint
+            crawler_config = {"css_selector": css_selector} if css_selector else None
+            result = await crawler.screenshot(
+                url, full_page=full_page, wait_for=wait_for,
+                crawler_config=crawler_config,
             )
-            result = await crawler.run(url, config=config)
             if not result.screenshot:
                 raise BackendError("Screenshot capture returned empty result")
             return {
                 "url": result.url,
                 "screenshot_base64": result.screenshot,
+                "pdf_base64": result.pdf,
                 "format": "png",
             }
         except BackendError:

@@ -48,15 +48,20 @@ async def crawl(
 @mcp.tool()
 async def extract(
     url: str,
-    schema: dict,
-    schema_type: str = "css",
+    query: Optional[str] = None,
+    schema: Optional[dict] = None,
+    method: str = "auto",
 ) -> str:
-    """Extract structured data from a web page using a CSS/XPath schema.
+    """Extract structured data from a web page.
 
-    The schema should have: name, baseSelector, and fields[].
-    Each field has: name, selector, type (text/attribute/html/list).
+    Three modes:
+    - AUTO (default): system picks CSS Schema or LLM based on page structure
+    - query only: "extract all products with title and price" (uses LLM)
+    - schema: provide a CSS schema with name, baseSelector, fields[] (deterministic, no LLM)
+
+    Returns extracted data as a list of JSON objects.
     """
-    result = await core.extract(url, schema=schema, schema_type=schema_type)
+    result = await core.extract(url, query=query, schema=schema, method=method)
     return _json(result)
 
 

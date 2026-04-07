@@ -82,12 +82,13 @@ async def crawl(
 async def extract(
     url: str,
     *,
-    schema: dict,
-    schema_type: str = "css",
+    query: Optional[str] = None,
+    schema: Optional[dict] = None,
+    method: str = "auto",
 ) -> Dict[str, Any]:
     try:
         backend = await _get_backend()
-        data = await backend.extract(url, schema=schema, schema_type=schema_type)
+        data = await backend.extract(url, query=query, schema=schema, method=method)
         return {"success": True, "data": data}
     except BackendError as e:
         return {"success": False, "error": e.message}

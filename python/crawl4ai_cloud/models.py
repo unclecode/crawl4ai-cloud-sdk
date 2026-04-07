@@ -176,6 +176,53 @@ class ScanUrlInfo:
 
 
 @dataclass
+class DomainScanUrlInfo:
+    """URL discovered by domain scan (/v1/scan)."""
+    url: str
+    host: str = ""
+    status: str = "valid"
+    relevance_score: Optional[float] = None
+    head_data: Optional[Dict[str, Any]] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "DomainScanUrlInfo":
+        return cls(
+            url=data.get("url", ""),
+            host=data.get("host", ""),
+            status=data.get("status", "valid"),
+            relevance_score=data.get("relevance_score"),
+            head_data=data.get("head_data"),
+        )
+
+
+@dataclass
+class ScanResult:
+    """Response from domain scan (/v1/scan)."""
+    success: bool
+    domain: str
+    total_urls: int
+    hosts_found: int
+    mode: str
+    urls: List[DomainScanUrlInfo]
+    duration_ms: int
+    error: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ScanResult":
+        urls = [DomainScanUrlInfo.from_dict(u) for u in data.get("urls", [])]
+        return cls(
+            success=data.get("success", False),
+            domain=data.get("domain", ""),
+            total_urls=data.get("total_urls", 0),
+            hosts_found=data.get("hosts_found", 0),
+            mode=data.get("mode", "default"),
+            urls=urls,
+            duration_ms=data.get("duration_ms", 0),
+            error=data.get("error"),
+        )
+
+
+@dataclass
 class DeepCrawlResult:
     """Deep crawl response."""
     job_id: str
@@ -532,4 +579,245 @@ class CrawlResult:
             proxy_used=data.get("proxy_used"),
             downloaded_files=data.get("downloaded_files"),
             usage=Usage.from_dict(data["usage"]) if data.get("usage") else None,
+        )
+
+
+# =============================================================================
+# Wrapper API Response Models
+# =============================================================================
+
+
+@dataclass
+class WrapperUsage:
+    """Credit usage from wrapper endpoints."""
+    credits_used: float = 0
+    credits_remaining: float = 0
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "WrapperUsage":
+        return cls(
+            credits_used=data.get("credits_used", 0),
+            credits_remaining=data.get("credits_remaining", 0),
+        )
+
+
+@dataclass
+class MarkdownResponse:
+    """Response from POST /v1/markdown."""
+    success: bool
+    url: str
+    markdown: Optional[str] = None
+    fit_markdown: Optional[str] = None
+    fit_html: Optional[str] = None
+    links: Optional[Dict[str, Any]] = None
+    media: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None
+    tables: Optional[List[Dict[str, Any]]] = None
+    duration_ms: int = 0
+    usage: Optional[WrapperUsage] = None
+    error_message: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "MarkdownResponse":
+        return cls(
+            success=data.get("success", False),
+            url=data.get("url", ""),
+            markdown=data.get("markdown"),
+            fit_markdown=data.get("fit_markdown"),
+            fit_html=data.get("fit_html"),
+            links=data.get("links"),
+            media=data.get("media"),
+            metadata=data.get("metadata"),
+            tables=data.get("tables"),
+            duration_ms=data.get("duration_ms", 0),
+            usage=WrapperUsage.from_dict(data["usage"]) if data.get("usage") else None,
+            error_message=data.get("error_message"),
+        )
+
+
+@dataclass
+class ScreenshotResponse:
+    """Response from POST /v1/screenshot."""
+    success: bool
+    url: str
+    screenshot: Optional[str] = None
+    pdf: Optional[str] = None
+    duration_ms: int = 0
+    usage: Optional[WrapperUsage] = None
+    error_message: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ScreenshotResponse":
+        return cls(
+            success=data.get("success", False),
+            url=data.get("url", ""),
+            screenshot=data.get("screenshot"),
+            pdf=data.get("pdf"),
+            duration_ms=data.get("duration_ms", 0),
+            usage=WrapperUsage.from_dict(data["usage"]) if data.get("usage") else None,
+            error_message=data.get("error_message"),
+        )
+
+
+@dataclass
+class ExtractResponse:
+    """Response from POST /v1/extract."""
+    success: bool
+    url: Optional[str] = None
+    data: Optional[List[Dict[str, Any]]] = None
+    method_used: Optional[str] = None
+    schema_used: Optional[Dict[str, Any]] = None
+    query_used: Optional[str] = None
+    llm_usage: Optional[LLMUsage] = None
+    duration_ms: int = 0
+    error_message: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "ExtractResponse":
+        llm_usage = None
+        if d.get("llm_usage"):
+            llm_usage = LLMUsage(
+                prompt_tokens=d["llm_usage"].get("prompt_tokens", 0),
+                completion_tokens=d["llm_usage"].get("completion_tokens", 0),
+                total_tokens=d["llm_usage"].get("total_tokens", 0),
+            )
+        return cls(
+            success=d.get("success", False),
+            url=d.get("url"),
+            data=d.get("data"),
+            method_used=d.get("method_used"),
+            schema_used=d.get("schema_used"),
+            query_used=d.get("query_used"),
+            llm_usage=llm_usage,
+            duration_ms=d.get("duration_ms", 0),
+            error_message=d.get("error_message"),
+        )
+
+
+@dataclass
+class MapUrlInfo:
+    """A discovered URL from POST /v1/map."""
+    url: str
+    host: str = ""
+    status: str = "valid"
+    relevance_score: Optional[float] = None
+    head_data: Optional[Dict[str, Any]] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "MapUrlInfo":
+        return cls(
+            url=data.get("url", ""),
+            host=data.get("host", ""),
+            status=data.get("status", "valid"),
+            relevance_score=data.get("relevance_score"),
+            head_data=data.get("head_data"),
+        )
+
+
+@dataclass
+class MapResponse:
+    """Response from POST /v1/map."""
+    success: bool
+    domain: str = ""
+    total_urls: int = 0
+    hosts_found: int = 0
+    mode: str = "default"
+    urls: List[MapUrlInfo] = field(default_factory=list)
+    duration_ms: int = 0
+    error_message: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "MapResponse":
+        return cls(
+            success=data.get("success", False),
+            domain=data.get("domain", ""),
+            total_urls=data.get("total_urls", 0),
+            hosts_found=data.get("hosts_found", 0),
+            mode=data.get("mode", "default"),
+            urls=[MapUrlInfo.from_dict(u) for u in data.get("urls", [])],
+            duration_ms=data.get("duration_ms", 0),
+            error_message=data.get("error_message"),
+        )
+
+
+@dataclass
+class SiteCrawlResponse:
+    """Response from POST /v1/crawl/site."""
+    job_id: str
+    status: str = "pending"
+    strategy: str = "map"
+    discovered_urls: int = 0
+    queued_urls: int = 0
+    created_at: str = ""
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SiteCrawlResponse":
+        return cls(
+            job_id=data.get("job_id", ""),
+            status=data.get("status", "pending"),
+            strategy=data.get("strategy", "map"),
+            discovered_urls=data.get("discovered_urls", 0),
+            queued_urls=data.get("queued_urls", 0),
+            created_at=data.get("created_at", ""),
+        )
+
+
+@dataclass
+class WrapperJobProgress:
+    """Progress for a wrapper async job."""
+    total: int = 0
+    completed: int = 0
+    failed: int = 0
+
+    @property
+    def percent(self) -> int:
+        if self.total == 0:
+            return 0
+        return int((self.completed + self.failed) / self.total * 100)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "WrapperJobProgress":
+        return cls(
+            total=data.get("total", 0),
+            completed=data.get("completed", 0),
+            failed=data.get("failed", 0),
+        )
+
+
+@dataclass
+class WrapperJob:
+    """Job status for wrapper async endpoints (/v1/markdown/async, etc.)."""
+    job_id: str
+    status: str = "pending"
+    progress: Optional[WrapperJobProgress] = None
+    progress_percent: int = 0
+    urls_count: int = 0
+    error: Optional[str] = None
+    created_at: Optional[str] = None
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+
+    @property
+    def is_complete(self) -> bool:
+        return self.status in ("completed", "partial", "failed", "cancelled")
+
+    @property
+    def is_successful(self) -> bool:
+        return self.status in ("completed", "partial")
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "WrapperJob":
+        progress = None
+        if data.get("progress"):
+            progress = WrapperJobProgress.from_dict(data["progress"])
+        return cls(
+            job_id=data.get("job_id", ""),
+            status=data.get("status", "pending"),
+            progress=progress,
+            progress_percent=data.get("progress_percent", 0),
+            urls_count=data.get("urls_count", 0),
+            error=data.get("error"),
+            created_at=data.get("created_at"),
+            started_at=data.get("started_at"),
+            completed_at=data.get("completed_at"),
         )

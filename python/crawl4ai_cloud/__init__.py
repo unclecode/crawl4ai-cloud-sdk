@@ -3,15 +3,21 @@ Crawl4AI Cloud SDK - Lightweight cloud client for Crawl4AI API.
 
 Example:
     ```python
-    from crawl4ai_cloud import AsyncWebCrawler, CrawlerRunConfig
+    from crawl4ai_cloud import AsyncWebCrawler
 
     async with AsyncWebCrawler(api_key="sk_live_xxx") as crawler:
+        # Simple wrapper endpoints
+        md = await crawler.markdown("https://example.com")
+        ss = await crawler.screenshot("https://example.com")
+        data = await crawler.extract("https://example.com", query="get products")
+        urls = await crawler.map("https://example.com")
+
+        # Full power endpoint (unchanged)
         result = await crawler.run("https://example.com")
-        print(result.markdown.raw_markdown)
     ```
 """
 
-__version__ = "0.2.6"
+__version__ = "0.3.0"
 
 # Main crawler class
 from .crawler import AsyncWebCrawler
@@ -35,6 +41,8 @@ from .models import (
     MarkdownResult,
     DeepCrawlResult,
     ScanUrlInfo,
+    ScanResult,
+    DomainScanUrlInfo,
     ContextResult,
     GeneratedSchema,
     StorageUsage,
@@ -45,6 +53,16 @@ from .models import (
     CrawlUsageMetrics,
     LLMUsageMetrics,
     StorageUsageMetrics,
+    # Wrapper API models
+    WrapperUsage,
+    MarkdownResponse,
+    ScreenshotResponse,
+    ExtractResponse,
+    MapUrlInfo,
+    MapResponse,
+    SiteCrawlResponse,
+    WrapperJob,
+    WrapperJobProgress,
 )
 
 # Errors
@@ -60,41 +78,21 @@ from .errors import (
 )
 
 __all__ = [
-    # Version
     "__version__",
-    # Main class
     "AsyncWebCrawler",
     # Configs
-    "CrawlerRunConfig",
-    "BrowserConfig",
-    "build_crawl_request",
-    "sanitize_crawler_config",
-    "sanitize_browser_config",
-    "normalize_proxy",
-    "normalize_url",
-    # Models
-    "CrawlResult",
-    "CrawlJob",
-    "JobProgress",
-    "MarkdownResult",
-    "DeepCrawlResult",
-    "ScanUrlInfo",
-    "ContextResult",
-    "GeneratedSchema",
-    "StorageUsage",
-    "ProxyConfig",
-    "LLMUsage",
-    "Usage",
-    "CrawlUsageMetrics",
-    "LLMUsageMetrics",
-    "StorageUsageMetrics",
+    "CrawlerRunConfig", "BrowserConfig",
+    "build_crawl_request", "sanitize_crawler_config", "sanitize_browser_config",
+    "normalize_proxy", "normalize_url",
+    # Core models
+    "CrawlResult", "CrawlJob", "JobProgress", "MarkdownResult",
+    "DeepCrawlResult", "ScanUrlInfo", "ScanResult", "DomainScanUrlInfo",
+    "ContextResult", "GeneratedSchema", "StorageUsage", "ProxyConfig", "LLMUsage",
+    "Usage", "CrawlUsageMetrics", "LLMUsageMetrics", "StorageUsageMetrics",
+    # Wrapper API models
+    "WrapperUsage", "MarkdownResponse", "ScreenshotResponse", "ExtractResponse",
+    "MapUrlInfo", "MapResponse", "SiteCrawlResponse", "WrapperJob", "WrapperJobProgress",
     # Errors
-    "CloudError",
-    "AuthenticationError",
-    "RateLimitError",
-    "QuotaExceededError",
-    "NotFoundError",
-    "ValidationError",
-    "TimeoutError",
-    "ServerError",
+    "CloudError", "AuthenticationError", "RateLimitError", "QuotaExceededError",
+    "NotFoundError", "ValidationError", "TimeoutError", "ServerError",
 ]

@@ -14,6 +14,13 @@ from .models import (
     StorageUsage,
     ProxyConfig,
     JobProgress,
+    MarkdownResponse,
+    ScreenshotResponse,
+    ExtractResponse,
+    MapResponse,
+    SiteCrawlResponse,
+    WrapperJob,
+    ScanResult,
 )
 from .configs import (
     CrawlerRunConfig,
@@ -704,6 +711,72 @@ class AsyncWebCrawler:
         return DeepCrawlResult.from_dict(data)
 
     # -------------------------------------------------------------------------
+    # Scan API (URL Discovery)
+    # -------------------------------------------------------------------------
+
+    async def scan(
+        self,
+        url: str,
+        mode: str = "default",
+        max_urls: Optional[int] = None,
+        include_subdomains: bool = True,
+        extract_head: bool = True,
+        soft_404_detection: bool = True,
+        query: Optional[str] = None,
+        score_threshold: Optional[float] = None,
+        force: bool = False,
+        probe_threshold: int = 10,
+    ) -> "ScanResult":
+        """
+        Discover all URLs under a domain without crawling.
+
+        Synchronous — results return inline, no job polling needed.
+        Results cached 7 days — repeat scans return in ~200ms.
+        Costs 1 credit per scan.
+
+        Args:
+            url: Domain to scan (e.g., "https://example.com")
+            mode: "default" (fast, adaptive) or "deep" (comprehensive, ~30-60s)
+            max_urls: Maximum URLs to return. Plan limit applied server-side.
+            include_subdomains: Discover subdomains. Default: True.
+            extract_head: Fetch <head> metadata per URL. Default: True.
+            soft_404_detection: Filter SPA false positives. Default: True.
+            query: Relevance query for scoring URLs.
+            score_threshold: Minimum relevance score (0.0-1.0).
+            force: Bypass 7-day cache and force fresh scan.
+            probe_threshold: In default mode, auto-probe if fewer URLs found. 0 to disable.
+
+        Returns:
+            ScanResult with discovered URLs, hosts, and metadata.
+
+        Example:
+            ```python
+            result = await crawler.scan("https://example.com", max_urls=50)
+            print(f"Found {result.total_urls} URLs across {result.hosts_found} hosts")
+            for url_info in result.urls[:5]:
+                print(f"  {url_info.url}")
+            ```
+        """
+        from crawl4ai_cloud.models import ScanResult
+
+        body: Dict[str, Any] = {"url": url, "mode": mode}
+        if max_urls is not None:
+            body["max_urls"] = max_urls
+        body["include_subdomains"] = include_subdomains
+        body["extract_head"] = extract_head
+        body["soft_404_detection"] = soft_404_detection
+        if query:
+            body["query"] = query
+        if score_threshold is not None:
+            body["score_threshold"] = score_threshold
+        body["force"] = force
+        if probe_threshold != 10:
+            body["probe_threshold"] = probe_threshold
+
+        data = await self._http.request("POST", "/v1/scan", json=body)
+        return ScanResult.from_dict(data)
+
+    # -------------------------------------------------------------------------
     # Context API
     # -------------------------------------------------------------------------
 
@@ -845,6 +918,462 @@ class AsyncWebCrawler:
     async def health(self) -> Dict[str, str]:
         """Check API health status."""
         return await self._http.request("GET", "/health")
+
+    # =========================================================================
+    # Wrapper API -- Simplified endpoints
+    # =========================================================================
+
+    async def markdown(
+        self,
+        url: str,
+        strategy: str = "browser",
+        fit: bool = True,
+        include: Optional[List[str]] = None,
+        crawler_config: Optional[Dict[str, Any]] = None,
+        browser_config: Optional[Dict[str, Any]] = None,
+        proxy: Optional[Union[str, Dict[str, Any], ProxyConfig]] = None,
+        bypass_cache: bool = False,
+    ) -> MarkdownResponse:
+        """
+        Get clean markdown from a URL.
+
+        Args:
+            url: URL to convert to markdown
+            strategy: "browser" (JS support) or "http" (faster)
+            fit: Apply content pruning for cleaner markdown (default True)
+            include: Extra data to return: "links", "media", "metadata", "tables"
+            crawler_config: CrawlerRunConfig overrides (same fields as /v1/crawl)
+            browser_config: BrowserConfig overrides (headers, cookies, profile_id, etc.)
+            proxy: Proxy configuration
+            bypass_cache: Skip cache
+
+        Returns:
+            MarkdownResponse with markdown, fit_markdown, and optional include fields
+        """
+        body: Dict[str, Any] = {"url": url, "strategy": strategy, "fit": fit}
+        if include:
+            body["include"] = include
+        if crawler_config:
+            body["crawler_config"] = crawler_config
+        if browser_config:
+            body["browser_config"] = browser_config
+        if proxy:
+            body["proxy"] = normalize_proxy(proxy)
+        if bypass_cache:
+            body["bypass_cache"] = True
+
+        data = await self._http.request("POST", "/v1/markdown", json=body)
+        return MarkdownResponse.from_dict(data)
+
+    async def screenshot(
+        self,
+        url: str,
+        full_page: bool = True,
+        pdf: bool = False,
+        wait_for: Optional[str] = None,
+        crawler_config: Optional[Dict[str, Any]] = None,
+        browser_config: Optional[Dict[str, Any]] = None,
+        proxy: Optional[Union[str, Dict[str, Any], ProxyConfig]] = None,
+        bypass_cache: bool = False,
+    ) -> ScreenshotResponse:
+        """
+        Capture a screenshot or PDF of a web page.
+
+        Args:
+            url: URL to screenshot
+            full_page: Capture full scrollable page (default True)
+            pdf: Generate PDF in addition to screenshot
+            wait_for: CSS selector or seconds to wait before capture
+            crawler_config: CrawlerRunConfig overrides
+            browser_config: BrowserConfig overrides
+            proxy: Proxy configuration
+            bypass_cache: Skip cache
+
+        Returns:
+            ScreenshotResponse with base64 screenshot and/or pdf
+        """
+        body: Dict[str, Any] = {"url": url, "full_page": full_page}
+        if pdf:
+            body["pdf"] = True
+        if wait_for:
+            body["wait_for"] = wait_for
+        if crawler_config:
+            body["crawler_config"] = crawler_config
+        if browser_config:
+            body["browser_config"] = browser_config
+        if proxy:
+            body["proxy"] = normalize_proxy(proxy)
+        if bypass_cache:
+            body["bypass_cache"] = True
+
+        data = await self._http.request("POST", "/v1/screenshot", json=body, timeout=120)
+        return ScreenshotResponse.from_dict(data)
+
+    async def extract(
+        self,
+        url: str,
+        query: Optional[str] = None,
+        json_example: Optional[Dict[str, Any]] = None,
+        schema: Optional[Dict[str, Any]] = None,
+        method: str = "auto",
+        strategy: str = "http",
+        crawler_config: Optional[Dict[str, Any]] = None,
+        browser_config: Optional[Dict[str, Any]] = None,
+        llm_config: Optional[Dict[str, Any]] = None,
+        proxy: Optional[Union[str, Dict[str, Any], ProxyConfig]] = None,
+        bypass_cache: bool = False,
+    ) -> ExtractResponse:
+        """
+        Extract structured data from a web page.
+
+        Args:
+            url: URL to extract from
+            query: What to extract (e.g. "get all products with title and price")
+            json_example: Example of desired output shape
+            schema: Pre-built CSS schema for deterministic extraction
+            method: "auto" (default), "llm", or "schema"
+            strategy: "http" (default, faster) or "browser" (JS support)
+            crawler_config: CrawlerRunConfig overrides
+            browser_config: BrowserConfig overrides
+            llm_config: LLM provider config for BYOK
+            proxy: Proxy configuration
+            bypass_cache: Skip cache
+
+        Returns:
+            ExtractResponse with extracted data, method_used, schema_used
+        """
+        body: Dict[str, Any] = {"url": url, "method": method, "strategy": strategy}
+        if query:
+            body["query"] = query
+        if json_example:
+            body["json_example"] = json_example
+        if schema:
+            body["schema"] = schema
+        if crawler_config:
+            body["crawler_config"] = crawler_config
+        if browser_config:
+            body["browser_config"] = browser_config
+        if llm_config:
+            body["llm_config"] = llm_config
+        if proxy:
+            body["proxy"] = normalize_proxy(proxy)
+        if bypass_cache:
+            body["bypass_cache"] = True
+
+        data = await self._http.request("POST", "/v1/extract", json=body, timeout=180)
+        return ExtractResponse.from_dict(data)
+
+    async def map(
+        self,
+        url: str,
+        mode: str = "default",
+        max_urls: Optional[int] = None,
+        include_subdomains: bool = False,
+        extract_head: bool = True,
+        query: Optional[str] = None,
+        score_threshold: Optional[float] = None,
+        force: bool = False,
+        proxy: Optional[Union[str, Dict[str, Any], ProxyConfig]] = None,
+    ) -> MapResponse:
+        """
+        Discover all URLs on a domain.
+
+        Args:
+            url: Domain URL to map (e.g. "https://example.com")
+            mode: "default" (fast, ~2-15s) or "deep" (comprehensive, ~30-60s)
+            max_urls: Maximum URLs to return
+            include_subdomains: Include subdomains in results
+            extract_head: Fetch title/description for each URL
+            query: Score URLs by relevance to this query (BM25)
+            score_threshold: Minimum relevance score (0.0-1.0, requires query)
+            force: Bypass 7-day cache
+            proxy: Proxy configuration
+
+        Returns:
+            MapResponse with discovered URLs, scores, and metadata
+        """
+        body: Dict[str, Any] = {"url": url, "mode": mode}
+        if max_urls is not None:
+            body["max_urls"] = max_urls
+        body["include_subdomains"] = include_subdomains
+        body["extract_head"] = extract_head
+        if query:
+            body["query"] = query
+        if score_threshold is not None:
+            body["score_threshold"] = score_threshold
+        if force:
+            body["force"] = True
+        if proxy:
+            body["proxy"] = normalize_proxy(proxy)
+
+        data = await self._http.request("POST", "/v1/map", json=body, timeout=120)
+        return MapResponse.from_dict(data)
+
+    # ---- Async batch methods ----
+
+    async def markdown_many(
+        self,
+        urls: List[str],
+        strategy: str = "browser",
+        fit: bool = True,
+        include: Optional[List[str]] = None,
+        crawler_config: Optional[Dict[str, Any]] = None,
+        browser_config: Optional[Dict[str, Any]] = None,
+        proxy: Optional[Union[str, Dict[str, Any], ProxyConfig]] = None,
+        bypass_cache: bool = False,
+        wait: bool = False,
+        poll_interval: float = 2.0,
+        timeout: Optional[float] = None,
+        webhook_url: Optional[str] = None,
+        priority: int = 5,
+    ) -> WrapperJob:
+        """Create an async markdown job for multiple URLs."""
+        body: Dict[str, Any] = {"urls": urls, "strategy": strategy, "fit": fit}
+        if include:
+            body["include"] = include
+        if crawler_config:
+            body["crawler_config"] = crawler_config
+        if browser_config:
+            body["browser_config"] = browser_config
+        if proxy:
+            body["proxy"] = normalize_proxy(proxy)
+        if bypass_cache:
+            body["bypass_cache"] = True
+        if webhook_url:
+            body["webhook_url"] = webhook_url
+        body["priority"] = priority
+
+        data = await self._http.request("POST", "/v1/markdown/async", json=body)
+        job = WrapperJob.from_dict(data)
+        if wait:
+            job = await self._wait_wrapper_job(job.job_id, "markdown", poll_interval, timeout)
+        return job
+
+    async def screenshot_many(
+        self,
+        urls: List[str],
+        full_page: bool = True,
+        pdf: bool = False,
+        wait_for: Optional[str] = None,
+        crawler_config: Optional[Dict[str, Any]] = None,
+        browser_config: Optional[Dict[str, Any]] = None,
+        proxy: Optional[Union[str, Dict[str, Any], ProxyConfig]] = None,
+        bypass_cache: bool = False,
+        wait: bool = False,
+        poll_interval: float = 2.0,
+        timeout: Optional[float] = None,
+        webhook_url: Optional[str] = None,
+        priority: int = 5,
+    ) -> WrapperJob:
+        """Create an async screenshot job for multiple URLs."""
+        body: Dict[str, Any] = {"urls": urls, "full_page": full_page}
+        if pdf:
+            body["pdf"] = True
+        if wait_for:
+            body["wait_for"] = wait_for
+        if crawler_config:
+            body["crawler_config"] = crawler_config
+        if browser_config:
+            body["browser_config"] = browser_config
+        if proxy:
+            body["proxy"] = normalize_proxy(proxy)
+        if bypass_cache:
+            body["bypass_cache"] = True
+        if webhook_url:
+            body["webhook_url"] = webhook_url
+        body["priority"] = priority
+
+        data = await self._http.request("POST", "/v1/screenshot/async", json=body)
+        job = WrapperJob.from_dict(data)
+        if wait:
+            job = await self._wait_wrapper_job(job.job_id, "screenshot", poll_interval, timeout)
+        return job
+
+    async def extract_many(
+        self,
+        urls: List[str],
+        method: str = "llm",
+        query: Optional[str] = None,
+        json_example: Optional[Dict[str, Any]] = None,
+        schema: Optional[Dict[str, Any]] = None,
+        strategy: str = "http",
+        crawler_config: Optional[Dict[str, Any]] = None,
+        browser_config: Optional[Dict[str, Any]] = None,
+        llm_config: Optional[Dict[str, Any]] = None,
+        proxy: Optional[Union[str, Dict[str, Any], ProxyConfig]] = None,
+        bypass_cache: bool = False,
+        wait: bool = False,
+        poll_interval: float = 2.0,
+        timeout: Optional[float] = None,
+        webhook_url: Optional[str] = None,
+        priority: int = 5,
+    ) -> WrapperJob:
+        """
+        Create an async extract job for multiple URLs.
+
+        Note: AUTO method is not supported for batch. Specify "llm" or "schema".
+        """
+        if method == "auto":
+            raise ValueError("AUTO method is not supported for batch extraction. Specify 'llm' or 'schema'.")
+
+        body: Dict[str, Any] = {"urls": urls, "method": method, "strategy": strategy}
+        if query:
+            body["query"] = query
+        if json_example:
+            body["json_example"] = json_example
+        if schema:
+            body["schema"] = schema
+        if crawler_config:
+            body["crawler_config"] = crawler_config
+        if browser_config:
+            body["browser_config"] = browser_config
+        if llm_config:
+            body["llm_config"] = llm_config
+        if proxy:
+            body["proxy"] = normalize_proxy(proxy)
+        if bypass_cache:
+            body["bypass_cache"] = True
+        if webhook_url:
+            body["webhook_url"] = webhook_url
+        body["priority"] = priority
+
+        data = await self._http.request("POST", "/v1/extract/async", json=body)
+        job = WrapperJob.from_dict(data)
+        if wait:
+            job = await self._wait_wrapper_job(job.job_id, "extract", poll_interval, timeout)
+        return job
+
+    # ---- Site crawl (always async) ----
+
+    async def crawl_site(
+        self,
+        url: str,
+        max_pages: int = 20,
+        discovery: str = "map",
+        strategy: str = "browser",
+        fit: bool = True,
+        include: Optional[List[str]] = None,
+        pattern: Optional[str] = None,
+        max_depth: Optional[int] = None,
+        crawler_config: Optional[Dict[str, Any]] = None,
+        browser_config: Optional[Dict[str, Any]] = None,
+        proxy: Optional[Union[str, Dict[str, Any], ProxyConfig]] = None,
+        webhook_url: Optional[str] = None,
+        priority: int = 5,
+        wait: bool = False,
+        poll_interval: float = 5.0,
+        timeout: Optional[float] = None,
+    ) -> SiteCrawlResponse:
+        """
+        Crawl an entire website. Always async -- returns job_id.
+
+        Args:
+            url: Starting URL
+            max_pages: Maximum pages to crawl (default 20)
+            discovery: URL discovery strategy: "map", "bfs", "dfs", "best_first"
+            strategy: Crawl strategy per page: "browser" or "http"
+            fit: Apply content pruning (default True)
+            include: Extra data: "links", "media", "metadata", "tables"
+            pattern: URL glob pattern filter (e.g. "*/blog/*")
+            max_depth: Max traversal depth (for bfs/dfs/best_first)
+            wait: If True, poll until complete
+            poll_interval: Seconds between polls (default 5)
+            timeout: Max seconds to wait
+
+        Returns:
+            SiteCrawlResponse with job_id for polling via get_deep_crawl_status()
+        """
+        body: Dict[str, Any] = {
+            "url": url, "max_pages": max_pages,
+            "discovery": discovery, "strategy": strategy, "fit": fit,
+        }
+        if include:
+            body["include"] = include
+        if pattern:
+            body["pattern"] = pattern
+        if max_depth is not None:
+            body["max_depth"] = max_depth
+        if crawler_config:
+            body["crawler_config"] = crawler_config
+        if browser_config:
+            body["browser_config"] = browser_config
+        if proxy:
+            body["proxy"] = normalize_proxy(proxy)
+        if webhook_url:
+            body["webhook_url"] = webhook_url
+        body["priority"] = priority
+
+        data = await self._http.request("POST", "/v1/crawl/site", json=body, timeout=120)
+        result = SiteCrawlResponse.from_dict(data)
+
+        if wait:
+            await self._wait_scan_job(result.job_id, poll_interval, timeout)
+            # Re-fetch final status
+            final = await self.get_deep_crawl_status(result.job_id)
+            result.status = final.status
+            result.discovered_urls = final.discovered_count
+            result.queued_urls = final.queued_urls
+
+        return result
+
+    # ---- Wrapper job management (shared implementation) ----
+
+    async def _get_wrapper_job(self, job_id: str, job_type: str) -> WrapperJob:
+        data = await self._http.request("GET", f"/v1/{job_type}/jobs/{job_id}")
+        return WrapperJob.from_dict(data)
+
+    async def _list_wrapper_jobs(
+        self, job_type: str, status: Optional[str] = None, limit: int = 20, offset: int = 0,
+    ) -> List[WrapperJob]:
+        params: Dict[str, Any] = {"limit": limit, "offset": offset}
+        if status:
+            params["status"] = status
+        data = await self._http.request("GET", f"/v1/{job_type}/jobs", params=params)
+        return [WrapperJob.from_dict(j) for j in data.get("jobs", [])]
+
+    async def _cancel_wrapper_job(self, job_id: str, job_type: str) -> bool:
+        await self._http.request("DELETE", f"/v1/{job_type}/jobs/{job_id}")
+        return True
+
+    async def _wait_wrapper_job(
+        self, job_id: str, job_type: str, poll_interval: float = 2.0, timeout: Optional[float] = None,
+    ) -> WrapperJob:
+        start = time.time()
+        while True:
+            job = await self._get_wrapper_job(job_id, job_type)
+            if job.is_complete:
+                return job
+            if timeout and (time.time() - start) > timeout:
+                raise TimeoutError(f"Job {job_id} did not complete within {timeout}s")
+            await asyncio.sleep(poll_interval)
+
+    # Public convenience delegates
+    async def get_markdown_job(self, job_id: str) -> WrapperJob:
+        return await self._get_wrapper_job(job_id, "markdown")
+
+    async def get_screenshot_job(self, job_id: str) -> WrapperJob:
+        return await self._get_wrapper_job(job_id, "screenshot")
+
+    async def get_extract_job(self, job_id: str) -> WrapperJob:
+        return await self._get_wrapper_job(job_id, "extract")
+
+    async def list_markdown_jobs(self, status: Optional[str] = None, limit: int = 20, offset: int = 0) -> List[WrapperJob]:
+        return await self._list_wrapper_jobs("markdown", status, limit, offset)
+
+    async def list_screenshot_jobs(self, status: Optional[str] = None, limit: int = 20, offset: int = 0) -> List[WrapperJob]:
+        return await self._list_wrapper_jobs("screenshot", status, limit, offset)
+
+    async def list_extract_jobs(self, status: Optional[str] = None, limit: int = 20, offset: int = 0) -> List[WrapperJob]:
+        return await self._list_wrapper_jobs("extract", status, limit, offset)
+
+    async def cancel_markdown_job(self, job_id: str) -> bool:
+        return await self._cancel_wrapper_job(job_id, "markdown")
+
+    async def cancel_screenshot_job(self, job_id: str) -> bool:
+        return await self._cancel_wrapper_job(job_id, "screenshot")
+
+    async def cancel_extract_job(self, job_id: str) -> bool:
+        return await self._cancel_wrapper_job(job_id, "extract")
 
     # -------------------------------------------------------------------------
     # Context Manager

@@ -258,6 +258,92 @@ func CrawlResultFromMap(data map[string]interface{}) *CrawlResult {
 	return result
 }
 
+// DomainScanURLInfo represents a URL discovered by domain scan.
+type DomainScanURLInfo struct {
+	URL            string                 `json:"url"`
+	Host           string                 `json:"host"`
+	Status         string                 `json:"status"`
+	RelevanceScore *float64               `json:"relevance_score,omitempty"`
+	HeadData       map[string]interface{} `json:"head_data,omitempty"`
+}
+
+// ScanResult represents a domain scan response (/v1/scan).
+type ScanResult struct {
+	Success    bool                `json:"success"`
+	Domain     string              `json:"domain"`
+	TotalUrls  int                 `json:"total_urls"`
+	HostsFound int                 `json:"hosts_found"`
+	Mode       string              `json:"mode"`
+	Urls       []DomainScanURLInfo `json:"urls"`
+	DurationMs int                 `json:"duration_ms"`
+	Error      string              `json:"error,omitempty"`
+}
+
+// ScanOptions configures a domain scan request.
+type ScanOptions struct {
+	Mode              string   `json:"mode,omitempty"` // "default" or "deep"
+	MaxUrls           int      `json:"max_urls,omitempty"`
+	IncludeSubdomains *bool    `json:"include_subdomains,omitempty"`
+	ExtractHead       *bool    `json:"extract_head,omitempty"`
+	Soft404Detection  *bool    `json:"soft_404_detection,omitempty"`
+	Query             string   `json:"query,omitempty"`
+	ScoreThreshold    *float64 `json:"score_threshold,omitempty"`
+	Force             bool     `json:"force,omitempty"`
+	ProbeThreshold    *int     `json:"probe_threshold,omitempty"`
+}
+
+// ScanResultFromMap creates a ScanResult from API response map.
+func ScanResultFromMap(data map[string]interface{}) *ScanResult {
+	result := &ScanResult{}
+
+	if v, ok := data["success"].(bool); ok {
+		result.Success = v
+	}
+	if v, ok := data["domain"].(string); ok {
+		result.Domain = v
+	}
+	if v, ok := data["total_urls"].(float64); ok {
+		result.TotalUrls = int(v)
+	}
+	if v, ok := data["hosts_found"].(float64); ok {
+		result.HostsFound = int(v)
+	}
+	if v, ok := data["mode"].(string); ok {
+		result.Mode = v
+	}
+	if v, ok := data["duration_ms"].(float64); ok {
+		result.DurationMs = int(v)
+	}
+	if v, ok := data["error"].(string); ok {
+		result.Error = v
+	}
+	if urls, ok := data["urls"].([]interface{}); ok {
+		for _, u := range urls {
+			if um, ok := u.(map[string]interface{}); ok {
+				info := DomainScanURLInfo{Status: "valid"}
+				if v, ok := um["url"].(string); ok {
+					info.URL = v
+				}
+				if v, ok := um["host"].(string); ok {
+					info.Host = v
+				}
+				if v, ok := um["status"].(string); ok {
+					info.Status = v
+				}
+				if score, ok := um["relevance_score"].(float64); ok {
+					info.RelevanceScore = &score
+				}
+				if hd, ok := um["head_data"].(map[string]interface{}); ok {
+					info.HeadData = hd
+				}
+				result.Urls = append(result.Urls, info)
+			}
+		}
+	}
+
+	return result
+}
+
 // DeepCrawlResult represents a deep crawl response.
 type DeepCrawlResult struct {
 	JobID           string `json:"job_id"`
@@ -491,4 +577,187 @@ func GeneratedSchemaFromMap(data map[string]interface{}) *GeneratedSchema {
 	}
 
 	return result
+}
+
+// =============================================================================
+// Wrapper API Models
+// =============================================================================
+
+// WrapperUsage represents credit usage from wrapper endpoints.
+type WrapperUsage struct {
+	CreditsUsed      float64 `json:"credits_used"`
+	CreditsRemaining float64 `json:"credits_remaining"`
+}
+
+// MarkdownResponse represents the response from POST /v1/markdown.
+type MarkdownResponse struct {
+	Success      bool                     `json:"success"`
+	URL          string                   `json:"url"`
+	Markdown     string                   `json:"markdown,omitempty"`
+	FitMarkdown  string                   `json:"fit_markdown,omitempty"`
+	FitHTML      string                   `json:"fit_html,omitempty"`
+	Links        map[string]interface{}   `json:"links,omitempty"`
+	Media        map[string]interface{}   `json:"media,omitempty"`
+	Metadata     map[string]interface{}   `json:"metadata,omitempty"`
+	Tables       []map[string]interface{} `json:"tables,omitempty"`
+	DurationMs   int                      `json:"duration_ms"`
+	Usage        *WrapperUsage            `json:"usage,omitempty"`
+	ErrorMessage string                   `json:"error_message,omitempty"`
+}
+
+// ScreenshotResponse represents the response from POST /v1/screenshot.
+type ScreenshotResponse struct {
+	Success      bool          `json:"success"`
+	URL          string        `json:"url"`
+	Screenshot   string        `json:"screenshot,omitempty"`
+	PDF          string        `json:"pdf,omitempty"`
+	DurationMs   int           `json:"duration_ms"`
+	Usage        *WrapperUsage `json:"usage,omitempty"`
+	ErrorMessage string        `json:"error_message,omitempty"`
+}
+
+// ExtractResponse represents the response from POST /v1/extract.
+type ExtractResponse struct {
+	Success      bool                     `json:"success"`
+	URL          string                   `json:"url,omitempty"`
+	Data         []map[string]interface{} `json:"data,omitempty"`
+	MethodUsed   string                   `json:"method_used,omitempty"`
+	SchemaUsed   map[string]interface{}   `json:"schema_used,omitempty"`
+	QueryUsed    string                   `json:"query_used,omitempty"`
+	DurationMs   int                      `json:"duration_ms"`
+	ErrorMessage string                   `json:"error_message,omitempty"`
+}
+
+// MapUrlInfo represents a discovered URL from POST /v1/map.
+type MapUrlInfo struct {
+	URL            string                 `json:"url"`
+	Host           string                 `json:"host"`
+	Status         string                 `json:"status"`
+	RelevanceScore *float64               `json:"relevance_score,omitempty"`
+	HeadData       map[string]interface{} `json:"head_data,omitempty"`
+}
+
+// MapResponse represents the response from POST /v1/map.
+type MapResponse struct {
+	Success      bool         `json:"success"`
+	Domain       string       `json:"domain"`
+	TotalUrls    int          `json:"total_urls"`
+	HostsFound   int          `json:"hosts_found"`
+	Mode         string       `json:"mode"`
+	URLs         []MapUrlInfo `json:"urls"`
+	DurationMs   int          `json:"duration_ms"`
+	ErrorMessage string       `json:"error_message,omitempty"`
+}
+
+// SiteCrawlResponse represents the response from POST /v1/crawl/site.
+type SiteCrawlResponse struct {
+	JobID          string `json:"job_id"`
+	Status         string `json:"status"`
+	Strategy       string `json:"strategy"`
+	DiscoveredURLs int    `json:"discovered_urls"`
+	QueuedURLs     int    `json:"queued_urls"`
+	CreatedAt      string `json:"created_at"`
+}
+
+// WrapperJobProgress represents progress of a wrapper async job.
+type WrapperJobProgress struct {
+	Total     int `json:"total"`
+	Completed int `json:"completed"`
+	Failed    int `json:"failed"`
+}
+
+// Percent returns the completion percentage.
+func (p *WrapperJobProgress) Percent() int {
+	if p.Total == 0 {
+		return 0
+	}
+	return int(float64(p.Completed+p.Failed) / float64(p.Total) * 100)
+}
+
+// WrapperJob represents job status for wrapper async endpoints.
+type WrapperJob struct {
+	JobID           string              `json:"job_id"`
+	Status          string              `json:"status"`
+	Progress        *WrapperJobProgress `json:"progress,omitempty"`
+	ProgressPercent int                 `json:"progress_percent"`
+	URLsCount       int                 `json:"urls_count"`
+	Error           string              `json:"error,omitempty"`
+	CreatedAt       string              `json:"created_at,omitempty"`
+	StartedAt       string              `json:"started_at,omitempty"`
+	CompletedAt     string              `json:"completed_at,omitempty"`
+}
+
+// IsComplete returns true if the job is in a terminal state.
+func (j *WrapperJob) IsComplete() bool {
+	switch j.Status {
+	case "completed", "partial", "failed", "cancelled":
+		return true
+	}
+	return false
+}
+
+// Wrapper option structs
+
+// MarkdownOptions configures the markdown method.
+type MarkdownOptions struct {
+	Strategy      string                 `json:"strategy,omitempty"`
+	Fit           *bool                  `json:"fit,omitempty"`
+	Include       []string               `json:"include,omitempty"`
+	CrawlerConfig map[string]interface{} `json:"crawler_config,omitempty"`
+	BrowserConfig map[string]interface{} `json:"browser_config,omitempty"`
+	Proxy         map[string]interface{} `json:"proxy,omitempty"`
+	BypassCache   bool                   `json:"bypass_cache,omitempty"`
+}
+
+// ScreenshotOptions configures the screenshot method.
+type ScreenshotOptions struct {
+	FullPage      *bool                  `json:"full_page,omitempty"`
+	PDF           bool                   `json:"pdf,omitempty"`
+	WaitFor       string                 `json:"wait_for,omitempty"`
+	CrawlerConfig map[string]interface{} `json:"crawler_config,omitempty"`
+	BrowserConfig map[string]interface{} `json:"browser_config,omitempty"`
+	Proxy         map[string]interface{} `json:"proxy,omitempty"`
+	BypassCache   bool                   `json:"bypass_cache,omitempty"`
+}
+
+// ExtractOptions configures the extract method.
+type ExtractOptions struct {
+	Query         string                 `json:"query,omitempty"`
+	JSONExample   map[string]interface{} `json:"json_example,omitempty"`
+	Schema        map[string]interface{} `json:"schema,omitempty"`
+	Method        string                 `json:"method,omitempty"`
+	Strategy      string                 `json:"strategy,omitempty"`
+	CrawlerConfig map[string]interface{} `json:"crawler_config,omitempty"`
+	BrowserConfig map[string]interface{} `json:"browser_config,omitempty"`
+	LLMConfig     map[string]interface{} `json:"llm_config,omitempty"`
+	Proxy         map[string]interface{} `json:"proxy,omitempty"`
+	BypassCache   bool                   `json:"bypass_cache,omitempty"`
+}
+
+// MapOptions configures the map method.
+type MapOptions struct {
+	Mode              string                 `json:"mode,omitempty"`
+	MaxURLs           *int                   `json:"max_urls,omitempty"`
+	IncludeSubdomains bool                   `json:"include_subdomains,omitempty"`
+	ExtractHead       *bool                  `json:"extract_head,omitempty"`
+	Query             string                 `json:"query,omitempty"`
+	ScoreThreshold    *float64               `json:"score_threshold,omitempty"`
+	Force             bool                   `json:"force,omitempty"`
+	Proxy             map[string]interface{} `json:"proxy,omitempty"`
+}
+
+// SiteCrawlOptions configures the crawl_site method.
+type SiteCrawlOptions struct {
+	MaxPages      int                    `json:"max_pages,omitempty"`
+	Discovery     string                 `json:"discovery,omitempty"`
+	Strategy      string                 `json:"strategy,omitempty"`
+	Fit           *bool                  `json:"fit,omitempty"`
+	Include       []string               `json:"include,omitempty"`
+	Pattern       string                 `json:"pattern,omitempty"`
+	MaxDepth      *int                   `json:"max_depth,omitempty"`
+	CrawlerConfig map[string]interface{} `json:"crawler_config,omitempty"`
+	BrowserConfig map[string]interface{} `json:"browser_config,omitempty"`
+	Proxy         map[string]interface{} `json:"proxy,omitempty"`
+	WebhookURL    string                 `json:"webhook_url,omitempty"`
+	Priority      int                    `json:"priority,omitempty"`
 }

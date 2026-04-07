@@ -2,6 +2,7 @@
 package crawl4ai
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -510,6 +511,50 @@ type ContextOptions struct {
 	ResultsPerPAA int
 }
 
+// Scan discovers all URLs under a domain without crawling.
+// Synchronous — results return inline, no polling needed.
+func (c *AsyncWebCrawler) Scan(url string, opts *ScanOptions) (*ScanResult, error) {
+	body := map[string]interface{}{
+		"url": url,
+	}
+	if opts != nil {
+		if opts.Mode != "" {
+			body["mode"] = opts.Mode
+		}
+		if opts.MaxUrls > 0 {
+			body["max_urls"] = opts.MaxUrls
+		}
+		if opts.IncludeSubdomains != nil {
+			body["include_subdomains"] = *opts.IncludeSubdomains
+		}
+		if opts.ExtractHead != nil {
+			body["extract_head"] = *opts.ExtractHead
+		}
+		if opts.Soft404Detection != nil {
+			body["soft_404_detection"] = *opts.Soft404Detection
+		}
+		if opts.Query != "" {
+			body["query"] = opts.Query
+		}
+		if opts.ScoreThreshold != nil {
+			body["score_threshold"] = *opts.ScoreThreshold
+		}
+		if opts.Force {
+			body["force"] = true
+		}
+		if opts.ProbeThreshold != nil {
+			body["probe_threshold"] = *opts.ProbeThreshold
+		}
+	}
+
+	data, err := c.http.Post("/v1/scan", body, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	return ScanResultFromMap(data), nil
+}
+
 // Context builds context from a search query.
 func (c *AsyncWebCrawler) Context(query string, opts *ContextOptions) (*ContextResult, error) {
 	if opts == nil {
@@ -668,6 +713,291 @@ func (c *AsyncWebCrawler) Storage() (*StorageUsage, error) {
 // Health checks API health status.
 func (c *AsyncWebCrawler) Health() (map[string]interface{}, error) {
 	return c.http.Get("/health", nil)
+}
+
+// =========================================================================
+// Wrapper API -- Simplified endpoints
+// =========================================================================
+
+// Markdown gets clean markdown from a URL.
+func (c *AsyncWebCrawler) Markdown(url string, opts *MarkdownOptions) (*MarkdownResponse, error) {
+	if opts == nil {
+		opts = &MarkdownOptions{}
+	}
+	strategy := opts.Strategy
+	if strategy == "" {
+		strategy = "browser"
+	}
+	fit := true
+	if opts.Fit != nil {
+		fit = *opts.Fit
+	}
+
+	body := map[string]interface{}{"url": url, "strategy": strategy, "fit": fit}
+	if len(opts.Include) > 0 {
+		body["include"] = opts.Include
+	}
+	if opts.CrawlerConfig != nil {
+		body["crawler_config"] = opts.CrawlerConfig
+	}
+	if opts.BrowserConfig != nil {
+		body["browser_config"] = opts.BrowserConfig
+	}
+	if opts.Proxy != nil {
+		body["proxy"] = opts.Proxy
+	}
+	if opts.BypassCache {
+		body["bypass_cache"] = true
+	}
+
+	data, err := c.http.Post("/v1/markdown", body, 0)
+	if err != nil {
+		return nil, err
+	}
+	return unmarshalWrapper[MarkdownResponse](data)
+}
+
+// Screenshot captures a screenshot or PDF of a web page.
+func (c *AsyncWebCrawler) Screenshot(url string, opts *ScreenshotOptions) (*ScreenshotResponse, error) {
+	if opts == nil {
+		opts = &ScreenshotOptions{}
+	}
+	fullPage := true
+	if opts.FullPage != nil {
+		fullPage = *opts.FullPage
+	}
+
+	body := map[string]interface{}{"url": url, "full_page": fullPage}
+	if opts.PDF {
+		body["pdf"] = true
+	}
+	if opts.WaitFor != "" {
+		body["wait_for"] = opts.WaitFor
+	}
+	if opts.CrawlerConfig != nil {
+		body["crawler_config"] = opts.CrawlerConfig
+	}
+	if opts.BrowserConfig != nil {
+		body["browser_config"] = opts.BrowserConfig
+	}
+	if opts.Proxy != nil {
+		body["proxy"] = opts.Proxy
+	}
+	if opts.BypassCache {
+		body["bypass_cache"] = true
+	}
+
+	data, err := c.http.Post("/v1/screenshot", body, 120*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	return unmarshalWrapper[ScreenshotResponse](data)
+}
+
+// Extract extracts structured data from a web page.
+func (c *AsyncWebCrawler) Extract(url string, opts *ExtractOptions) (*ExtractResponse, error) {
+	if opts == nil {
+		opts = &ExtractOptions{}
+	}
+	method := opts.Method
+	if method == "" {
+		method = "auto"
+	}
+	strategy := opts.Strategy
+	if strategy == "" {
+		strategy = "http"
+	}
+
+	body := map[string]interface{}{"url": url, "method": method, "strategy": strategy}
+	if opts.Query != "" {
+		body["query"] = opts.Query
+	}
+	if opts.JSONExample != nil {
+		body["json_example"] = opts.JSONExample
+	}
+	if opts.Schema != nil {
+		body["schema"] = opts.Schema
+	}
+	if opts.CrawlerConfig != nil {
+		body["crawler_config"] = opts.CrawlerConfig
+	}
+	if opts.BrowserConfig != nil {
+		body["browser_config"] = opts.BrowserConfig
+	}
+	if opts.LLMConfig != nil {
+		body["llm_config"] = opts.LLMConfig
+	}
+	if opts.Proxy != nil {
+		body["proxy"] = opts.Proxy
+	}
+	if opts.BypassCache {
+		body["bypass_cache"] = true
+	}
+
+	data, err := c.http.Post("/v1/extract", body, 180*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	return unmarshalWrapper[ExtractResponse](data)
+}
+
+// Map discovers all URLs on a domain.
+func (c *AsyncWebCrawler) Map(url string, opts *MapOptions) (*MapResponse, error) {
+	if opts == nil {
+		opts = &MapOptions{}
+	}
+	mode := opts.Mode
+	if mode == "" {
+		mode = "default"
+	}
+	extractHead := true
+	if opts.ExtractHead != nil {
+		extractHead = *opts.ExtractHead
+	}
+
+	body := map[string]interface{}{
+		"url": url, "mode": mode,
+		"include_subdomains": opts.IncludeSubdomains,
+		"extract_head":       extractHead,
+	}
+	if opts.MaxURLs != nil {
+		body["max_urls"] = *opts.MaxURLs
+	}
+	if opts.Query != "" {
+		body["query"] = opts.Query
+	}
+	if opts.ScoreThreshold != nil {
+		body["score_threshold"] = *opts.ScoreThreshold
+	}
+	if opts.Force {
+		body["force"] = true
+	}
+	if opts.Proxy != nil {
+		body["proxy"] = opts.Proxy
+	}
+
+	data, err := c.http.Post("/v1/map", body, 120*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	return unmarshalWrapper[MapResponse](data)
+}
+
+// CrawlSite crawls an entire website. Always async.
+func (c *AsyncWebCrawler) CrawlSite(url string, opts *SiteCrawlOptions) (*SiteCrawlResponse, error) {
+	if opts == nil {
+		opts = &SiteCrawlOptions{}
+	}
+	maxPages := opts.MaxPages
+	if maxPages == 0 {
+		maxPages = 20
+	}
+	discovery := opts.Discovery
+	if discovery == "" {
+		discovery = "map"
+	}
+	strategy := opts.Strategy
+	if strategy == "" {
+		strategy = "browser"
+	}
+	fit := true
+	if opts.Fit != nil {
+		fit = *opts.Fit
+	}
+	priority := opts.Priority
+	if priority == 0 {
+		priority = 5
+	}
+
+	body := map[string]interface{}{
+		"url": url, "max_pages": maxPages, "discovery": discovery,
+		"strategy": strategy, "fit": fit, "priority": priority,
+	}
+	if len(opts.Include) > 0 {
+		body["include"] = opts.Include
+	}
+	if opts.Pattern != "" {
+		body["pattern"] = opts.Pattern
+	}
+	if opts.MaxDepth != nil {
+		body["max_depth"] = *opts.MaxDepth
+	}
+	if opts.CrawlerConfig != nil {
+		body["crawler_config"] = opts.CrawlerConfig
+	}
+	if opts.BrowserConfig != nil {
+		body["browser_config"] = opts.BrowserConfig
+	}
+	if opts.Proxy != nil {
+		body["proxy"] = opts.Proxy
+	}
+	if opts.WebhookURL != "" {
+		body["webhook_url"] = opts.WebhookURL
+	}
+
+	data, err := c.http.Post("/v1/crawl/site", body, 120*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	return unmarshalWrapper[SiteCrawlResponse](data)
+}
+
+// ---- Wrapper job management ----
+
+// GetMarkdownJob gets a markdown async job status.
+func (c *AsyncWebCrawler) GetMarkdownJob(jobID string) (*WrapperJob, error) {
+	return c.getWrapperJob(jobID, "markdown")
+}
+
+// GetScreenshotJob gets a screenshot async job status.
+func (c *AsyncWebCrawler) GetScreenshotJob(jobID string) (*WrapperJob, error) {
+	return c.getWrapperJob(jobID, "screenshot")
+}
+
+// GetExtractJob gets an extract async job status.
+func (c *AsyncWebCrawler) GetExtractJob(jobID string) (*WrapperJob, error) {
+	return c.getWrapperJob(jobID, "extract")
+}
+
+// CancelMarkdownJob cancels a markdown async job.
+func (c *AsyncWebCrawler) CancelMarkdownJob(jobID string) error {
+	return c.cancelWrapperJob(jobID, "markdown")
+}
+
+// CancelScreenshotJob cancels a screenshot async job.
+func (c *AsyncWebCrawler) CancelScreenshotJob(jobID string) error {
+	return c.cancelWrapperJob(jobID, "screenshot")
+}
+
+// CancelExtractJob cancels an extract async job.
+func (c *AsyncWebCrawler) CancelExtractJob(jobID string) error {
+	return c.cancelWrapperJob(jobID, "extract")
+}
+
+func (c *AsyncWebCrawler) getWrapperJob(jobID, jobType string) (*WrapperJob, error) {
+	data, err := c.http.Get(fmt.Sprintf("/v1/%s/jobs/%s", jobType, jobID), nil)
+	if err != nil {
+		return nil, err
+	}
+	return unmarshalWrapper[WrapperJob](data)
+}
+
+func (c *AsyncWebCrawler) cancelWrapperJob(jobID, jobType string) error {
+	_, err := c.http.Delete(fmt.Sprintf("/v1/%s/jobs/%s", jobType, jobID))
+	return err
+}
+
+// unmarshalWrapper converts a map response to a typed struct via JSON round-trip.
+func unmarshalWrapper[T any](data map[string]interface{}) (*T, error) {
+	jsonBytes, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("marshal response: %w", err)
+	}
+	var result T
+	if err := json.Unmarshal(jsonBytes, &result); err != nil {
+		return nil, fmt.Errorf("unmarshal response: %w", err)
+	}
+	return &result, nil
 }
 
 // Close closes the crawler (no-op in Go, but provided for API compatibility).

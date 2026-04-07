@@ -56,6 +56,8 @@ class CloudBackend:
         css_selector: Optional[str] = None,
         word_count_threshold: int = 200,
         bypass_cache: bool = False,
+        crawler_config: Optional[Dict[str, Any]] = None,
+        browser_config: Optional[Dict[str, Any]] = None,
     ) -> dict:
         crawler = self._ensure_crawler()
         try:
@@ -64,6 +66,12 @@ class CloudBackend:
                     url, strategy=strategy, max_depth=max_depth,
                     max_pages=max_pages, include_patterns=include_patterns,
                     exclude_patterns=exclude_patterns, bypass_cache=bypass_cache,
+                )
+            elif crawler_config or browser_config:
+                # Full power mode: use /v1/crawl directly
+                return await self._full_power_crawl(
+                    url, crawler_config=crawler_config, browser_config=browser_config,
+                    bypass_cache=bypass_cache,
                 )
             else:
                 return await self._single_crawl(
@@ -78,17 +86,17 @@ class CloudBackend:
 
     async def _single_crawl(self, url: str, *, css_selector=None,
                             word_count_threshold=200, bypass_cache=False) -> dict:
-        # Use the new wrapper endpoint for simple crawls
-        crawler_config = {}
+        # Simple case: use /v1/markdown wrapper
+        cc = {}
         if css_selector:
-            crawler_config["css_selector"] = css_selector
+            cc["css_selector"] = css_selector
         if word_count_threshold != 200:
-            crawler_config["word_count_threshold"] = word_count_threshold
+            cc["word_count_threshold"] = word_count_threshold
 
         result = await self._crawler.markdown(
             url, strategy="browser", fit=True,
             include=["links", "media", "metadata"],
-            crawler_config=crawler_config if crawler_config else None,
+            crawler_config=cc if cc else None,
             bypass_cache=bypass_cache,
         )
         return {
@@ -98,6 +106,17 @@ class CloudBackend:
             "metadata": result.metadata or {},
             "links": result.links or {},
         }
+
+    async def _full_power_crawl(self, url: str, *, crawler_config=None,
+                                 browser_config=None, bypass_cache=False) -> dict:
+        # Full power: use /v1/crawl with arbitrary configs
+        from crawl4ai_cloud import CrawlerRunConfig
+        config = CrawlerRunConfig(**(crawler_config or {}))
+        result = await self._crawler.run(
+            url, config=config, browser_config=browser_config,
+            bypass_cache=bypass_cache,
+        )
+        return self._normalize_crawl_result(result)
 
     async def _deep_crawl(self, url: str, *, strategy, max_depth, max_pages,
                           include_patterns, exclude_patterns, bypass_cache) -> dict:

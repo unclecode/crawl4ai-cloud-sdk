@@ -27,13 +27,17 @@ async def crawl(
     css_selector: Optional[str] = None,
     word_count_threshold: int = 200,
     bypass_cache: bool = False,
+    crawler_config: Optional[dict] = None,
+    browser_config: Optional[dict] = None,
 ) -> str:
     """Crawl a web page and return its content as markdown.
 
     For a single page, returns markdown text, metadata, and links.
-    Set deep_crawl=True for multi-page crawling — returns immediately with a job_id.
-    Use job_status to poll progress, then fetch to download results when done.
-    For background polling, run: crawl4ai-poll --job-id <id> --api-key $CRAWL4AI_API_KEY
+    Set deep_crawl=True for multi-page crawling -- returns a job_id immediately.
+
+    For full /v1/crawl power, pass crawler_config and/or browser_config dicts:
+    - crawler_config: {"extraction_strategy": {...}, "js_code": "...", "wait_for": "...", "screenshot": true}
+    - browser_config: {"headers": {...}, "cookies": [...], "profile_id": "..."}
     """
     result = await core.crawl(
         url, deep_crawl=deep_crawl, strategy=strategy,
@@ -41,6 +45,7 @@ async def crawl(
         include_patterns=include_patterns, exclude_patterns=exclude_patterns,
         css_selector=css_selector, word_count_threshold=word_count_threshold,
         bypass_cache=bypass_cache,
+        crawler_config=crawler_config, browser_config=browser_config,
     )
     return _json(result)
 

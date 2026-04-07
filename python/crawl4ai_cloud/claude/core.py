@@ -62,6 +62,8 @@ async def crawl(
     css_selector: Optional[str] = None,
     word_count_threshold: int = 200,
     bypass_cache: bool = False,
+    crawler_config: Optional[Dict[str, Any]] = None,
+    browser_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     try:
         backend = await _get_backend()
@@ -71,6 +73,7 @@ async def crawl(
             include_patterns=include_patterns, exclude_patterns=exclude_patterns,
             css_selector=css_selector, word_count_threshold=word_count_threshold,
             bypass_cache=bypass_cache,
+            crawler_config=crawler_config, browser_config=browser_config,
         )
         return {"success": True, "data": data}
     except BackendError as e:

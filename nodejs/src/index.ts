@@ -12,7 +12,7 @@
  * ```
  */
 
-export const VERSION = '0.1.1';
+export const VERSION = '0.3.0';
 
 // Main crawler class
 export { AsyncWebCrawler } from './crawler';
@@ -22,6 +22,27 @@ export type {
   RunManyOptions,
   DeepCrawlOptions,
 } from './crawler';
+
+// Wrapper API types
+export type {
+  WrapperUsage,
+  MarkdownResponse,
+  ScreenshotResponse,
+  ExtractResponse,
+  MapUrlInfo,
+  MapResponse,
+  SiteCrawlResponse,
+  WrapperJob,
+  WrapperJobProgress,
+  MarkdownOptions,
+  MarkdownManyOptions,
+  ScreenshotOptions,
+  ScreenshotManyOptions,
+  ExtractOptions,
+  ExtractManyOptions,
+  MapOptions,
+  SiteCrawlOptions,
+} from './models';
 
 // Configuration types and helpers
 export type { CrawlerRunConfig, BrowserConfig } from './configs';
@@ -40,6 +61,9 @@ export type {
   MarkdownResult,
   DeepCrawlResult,
   ScanUrlInfo,
+  ScanResult,
+  ScanOptions,
+  DomainScanUrlInfo,
   ContextResult,
   GeneratedSchema,
   StorageUsage,
@@ -56,6 +80,7 @@ export {
   crawlResultFromDict,
   crawlJobFromDict,
   deepCrawlResultFromDict,
+  scanResultFromDict,
   contextResultFromDict,
   generatedSchemaFromDict,
   storageUsageFromDict,
@@ -69,6 +94,14 @@ export {
   crawlUsageMetricsFromDict,
   llmUsageMetricsFromDict,
   storageUsageMetricsFromDict,
+  // Wrapper helpers
+  markdownResponseFromDict,
+  screenshotResponseFromDict,
+  extractResponseFromDict,
+  mapResponseFromDict,
+  siteCrawlResponseFromDict,
+  wrapperJobFromDict,
+  isWrapperJobComplete,
 } from './models';
 
 // Errors

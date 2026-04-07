@@ -8,6 +8,8 @@ import {
   CrawlResult,
   CrawlJob,
   DeepCrawlResult,
+  ScanResult,
+  ScanOptions,
   ContextResult,
   GeneratedSchema,
   StorageUsage,
@@ -16,11 +18,33 @@ import {
   crawlResultFromDict,
   crawlJobFromDict,
   deepCrawlResultFromDict,
+  scanResultFromDict,
   contextResultFromDict,
   generatedSchemaFromDict,
   storageUsageFromDict,
   isJobComplete,
   isDeepCrawlComplete,
+  MarkdownResponse,
+  ScreenshotResponse,
+  ExtractResponse,
+  MapResponse,
+  SiteCrawlResponse,
+  WrapperJob,
+  MarkdownOptions,
+  MarkdownManyOptions,
+  ScreenshotOptions,
+  ScreenshotManyOptions,
+  ExtractOptions,
+  ExtractManyOptions,
+  MapOptions,
+  SiteCrawlOptions,
+  markdownResponseFromDict,
+  screenshotResponseFromDict,
+  extractResponseFromDict,
+  mapResponseFromDict,
+  siteCrawlResponseFromDict,
+  wrapperJobFromDict,
+  isWrapperJobComplete,
 } from './models';
 import {
   CrawlerRunConfig,
@@ -520,6 +544,51 @@ export class AsyncWebCrawler {
   }
 
   // -------------------------------------------------------------------------
+  // Scan API (URL Discovery)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Discover all URLs under a domain without crawling.
+   * Synchronous — results return inline, no polling needed.
+   *
+   * @example
+   * const result = await crawler.scan('https://example.com', { maxUrls: 50 });
+   * console.log(`Found ${result.totalUrls} URLs across ${result.hostsFound} hosts`);
+   */
+  async scan(
+    url: string,
+    options: ScanOptions = {},
+  ): Promise<ScanResult> {
+    const {
+      mode = 'default',
+      maxUrls,
+      includeSubdomains = true,
+      extractHead = true,
+      soft404Detection = true,
+      query,
+      scoreThreshold,
+      force = false,
+      probeThreshold,
+    } = options;
+
+    const body: Record<string, unknown> = {
+      url,
+      mode,
+      include_subdomains: includeSubdomains,
+      extract_head: extractHead,
+      soft_404_detection: soft404Detection,
+      force,
+    };
+    if (maxUrls !== undefined) body.max_urls = maxUrls;
+    if (query) body.query = query;
+    if (scoreThreshold !== undefined) body.score_threshold = scoreThreshold;
+    if (probeThreshold !== undefined) body.probe_threshold = probeThreshold;
+
+    const data = await this.http.post('/v1/scan', body);
+    return scanResultFromDict(data);
+  }
+
+  // -------------------------------------------------------------------------
   // Context API
   // -------------------------------------------------------------------------
 
@@ -643,6 +712,180 @@ export class AsyncWebCrawler {
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
+
+  // =========================================================================
+  // Wrapper API -- Simplified endpoints
+  // =========================================================================
+
+  async markdown(url: string, options: MarkdownOptions = {}): Promise<MarkdownResponse> {
+    const { strategy = 'browser', fit = true, include, crawlerConfig, browserConfig, proxy, bypassCache } = options;
+    const body: Record<string, unknown> = { url, strategy, fit };
+    if (include) body.include = include;
+    if (crawlerConfig) body.crawler_config = crawlerConfig;
+    if (browserConfig) body.browser_config = browserConfig;
+    if (proxy) body.proxy = proxy;
+    if (bypassCache) body.bypass_cache = true;
+    const data = await this.http.post('/v1/markdown', body);
+    return markdownResponseFromDict(data);
+  }
+
+  async screenshot(url: string, options: ScreenshotOptions = {}): Promise<ScreenshotResponse> {
+    const { fullPage = true, pdf = false, waitFor, crawlerConfig, browserConfig, proxy, bypassCache } = options;
+    const body: Record<string, unknown> = { url, full_page: fullPage };
+    if (pdf) body.pdf = true;
+    if (waitFor) body.wait_for = waitFor;
+    if (crawlerConfig) body.crawler_config = crawlerConfig;
+    if (browserConfig) body.browser_config = browserConfig;
+    if (proxy) body.proxy = proxy;
+    if (bypassCache) body.bypass_cache = true;
+    const data = await this.http.post('/v1/screenshot', body, 120000);
+    return screenshotResponseFromDict(data);
+  }
+
+  async extract(url: string, options: ExtractOptions = {}): Promise<ExtractResponse> {
+    const { query, jsonExample, schema, method = 'auto', strategy = 'http', crawlerConfig, browserConfig, llmConfig, proxy, bypassCache } = options;
+    const body: Record<string, unknown> = { url, method, strategy };
+    if (query) body.query = query;
+    if (jsonExample) body.json_example = jsonExample;
+    if (schema) body.schema = schema;
+    if (crawlerConfig) body.crawler_config = crawlerConfig;
+    if (browserConfig) body.browser_config = browserConfig;
+    if (llmConfig) body.llm_config = llmConfig;
+    if (proxy) body.proxy = proxy;
+    if (bypassCache) body.bypass_cache = true;
+    const data = await this.http.post('/v1/extract', body, 180000);
+    return extractResponseFromDict(data);
+  }
+
+  async map(url: string, options: MapOptions = {}): Promise<MapResponse> {
+    const { mode = 'default', maxUrls, includeSubdomains = false, extractHead = true, query, scoreThreshold, force = false, proxy } = options;
+    const body: Record<string, unknown> = { url, mode, include_subdomains: includeSubdomains, extract_head: extractHead };
+    if (maxUrls !== undefined) body.max_urls = maxUrls;
+    if (query) body.query = query;
+    if (scoreThreshold !== undefined) body.score_threshold = scoreThreshold;
+    if (force) body.force = true;
+    if (proxy) body.proxy = proxy;
+    const data = await this.http.post('/v1/map', body, 120000);
+    return mapResponseFromDict(data);
+  }
+
+  // ---- Async batch methods ----
+
+  async markdownMany(urls: string[], options: MarkdownManyOptions = {}): Promise<WrapperJob> {
+    const { strategy = 'browser', fit = true, include, crawlerConfig, browserConfig, proxy, bypassCache, wait = false, pollInterval = 2, timeout, webhookUrl, priority = 5 } = options;
+    const body: Record<string, unknown> = { urls, strategy, fit, priority };
+    if (include) body.include = include;
+    if (crawlerConfig) body.crawler_config = crawlerConfig;
+    if (browserConfig) body.browser_config = browserConfig;
+    if (proxy) body.proxy = proxy;
+    if (bypassCache) body.bypass_cache = true;
+    if (webhookUrl) body.webhook_url = webhookUrl;
+    const data = await this.http.post('/v1/markdown/async', body);
+    let job = wrapperJobFromDict(data);
+    if (wait) job = await this.waitWrapperJob(job.jobId, 'markdown', pollInterval, timeout);
+    return job;
+  }
+
+  async screenshotMany(urls: string[], options: ScreenshotManyOptions = {}): Promise<WrapperJob> {
+    const { fullPage = true, pdf = false, waitFor, crawlerConfig, browserConfig, proxy, bypassCache, wait = false, pollInterval = 2, timeout, webhookUrl, priority = 5 } = options;
+    const body: Record<string, unknown> = { urls, full_page: fullPage, priority };
+    if (pdf) body.pdf = true;
+    if (waitFor) body.wait_for = waitFor;
+    if (crawlerConfig) body.crawler_config = crawlerConfig;
+    if (browserConfig) body.browser_config = browserConfig;
+    if (proxy) body.proxy = proxy;
+    if (bypassCache) body.bypass_cache = true;
+    if (webhookUrl) body.webhook_url = webhookUrl;
+    const data = await this.http.post('/v1/screenshot/async', body);
+    let job = wrapperJobFromDict(data);
+    if (wait) job = await this.waitWrapperJob(job.jobId, 'screenshot', pollInterval, timeout);
+    return job;
+  }
+
+  async extractMany(urls: string[], options: ExtractManyOptions): Promise<WrapperJob> {
+    if (options.method === 'auto' as string) {
+      throw new Error("AUTO method is not supported for batch extraction. Specify 'llm' or 'schema'.");
+    }
+    const { method, query, jsonExample, schema, strategy = 'http', crawlerConfig, browserConfig, llmConfig, proxy, bypassCache, wait = false, pollInterval = 2, timeout, webhookUrl, priority = 5 } = options;
+    const body: Record<string, unknown> = { urls, method, strategy, priority };
+    if (query) body.query = query;
+    if (jsonExample) body.json_example = jsonExample;
+    if (schema) body.schema = schema;
+    if (crawlerConfig) body.crawler_config = crawlerConfig;
+    if (browserConfig) body.browser_config = browserConfig;
+    if (llmConfig) body.llm_config = llmConfig;
+    if (proxy) body.proxy = proxy;
+    if (bypassCache) body.bypass_cache = true;
+    if (webhookUrl) body.webhook_url = webhookUrl;
+    const data = await this.http.post('/v1/extract/async', body);
+    let job = wrapperJobFromDict(data);
+    if (wait) job = await this.waitWrapperJob(job.jobId, 'extract', pollInterval, timeout);
+    return job;
+  }
+
+  // ---- Site crawl (always async) ----
+
+  async crawlSite(url: string, options: SiteCrawlOptions = {}): Promise<SiteCrawlResponse> {
+    const { maxPages = 20, discovery = 'map', strategy = 'browser', fit = true, include, pattern, maxDepth, crawlerConfig, browserConfig, proxy, webhookUrl, priority = 5 } = options;
+    const body: Record<string, unknown> = { url, max_pages: maxPages, discovery, strategy, fit, priority };
+    if (include) body.include = include;
+    if (pattern) body.pattern = pattern;
+    if (maxDepth !== undefined) body.max_depth = maxDepth;
+    if (crawlerConfig) body.crawler_config = crawlerConfig;
+    if (browserConfig) body.browser_config = browserConfig;
+    if (proxy) body.proxy = proxy;
+    if (webhookUrl) body.webhook_url = webhookUrl;
+    const data = await this.http.post('/v1/crawl/site', body, 120000);
+    return siteCrawlResponseFromDict(data);
+  }
+
+  // ---- Wrapper job management ----
+
+  private async waitWrapperJob(jobId: string, jobType: string, pollInterval: number = 2, timeout?: number): Promise<WrapperJob> {
+    const start = Date.now();
+    while (true) {
+      const job = await this.getWrapperJob(jobId, jobType);
+      if (isWrapperJobComplete(job)) return job;
+      if (timeout && (Date.now() - start) > timeout * 1000) {
+        throw new TimeoutError(`Job ${jobId} did not complete within ${timeout}s`);
+      }
+      await this.sleep(pollInterval * 1000);
+    }
+  }
+
+  private async getWrapperJob(jobId: string, jobType: string): Promise<WrapperJob> {
+    const data = await this.http.get(`/v1/${jobType}/jobs/${jobId}`);
+    return wrapperJobFromDict(data);
+  }
+
+  async getMarkdownJob(jobId: string): Promise<WrapperJob> { return this.getWrapperJob(jobId, 'markdown'); }
+  async getScreenshotJob(jobId: string): Promise<WrapperJob> { return this.getWrapperJob(jobId, 'screenshot'); }
+  async getExtractJob(jobId: string): Promise<WrapperJob> { return this.getWrapperJob(jobId, 'extract'); }
+
+  async listMarkdownJobs(options: { status?: string; limit?: number; offset?: number } = {}): Promise<WrapperJob[]> {
+    const params: Record<string, string | number | boolean> = { limit: options.limit || 20, offset: options.offset || 0 };
+    if (options.status) params.status = options.status;
+    const data = await this.http.get('/v1/markdown/jobs', params);
+    return ((data as Record<string, unknown>).jobs as Record<string, unknown>[] || []).map(wrapperJobFromDict);
+  }
+
+  async listScreenshotJobs(options: { status?: string; limit?: number; offset?: number } = {}): Promise<WrapperJob[]> {
+    const params: Record<string, string | number | boolean> = { limit: options.limit || 20, offset: options.offset || 0 };
+    if (options.status) params.status = options.status;
+    const data = await this.http.get('/v1/screenshot/jobs', params);
+    return ((data as Record<string, unknown>).jobs as Record<string, unknown>[] || []).map(wrapperJobFromDict);
+  }
+
+  async listExtractJobs(options: { status?: string; limit?: number; offset?: number } = {}): Promise<WrapperJob[]> {
+    const params: Record<string, string | number | boolean> = { limit: options.limit || 20, offset: options.offset || 0 };
+    if (options.status) params.status = options.status;
+    const data = await this.http.get('/v1/extract/jobs', params);
+    return ((data as Record<string, unknown>).jobs as Record<string, unknown>[] || []).map(wrapperJobFromDict);
+  }
+
+  async cancelMarkdownJob(jobId: string): Promise<boolean> { await this.http.delete(`/v1/markdown/jobs/${jobId}`); return true; }
+  async cancelScreenshotJob(jobId: string): Promise<boolean> { await this.http.delete(`/v1/screenshot/jobs/${jobId}`); return true; }
+  async cancelExtractJob(jobId: string): Promise<boolean> { await this.http.delete(`/v1/extract/jobs/${jobId}`); return true; }
 
   /**
    * Close the client (no-op for now, but provided for API compatibility).

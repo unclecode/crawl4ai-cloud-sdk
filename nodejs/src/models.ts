@@ -123,6 +123,46 @@ export interface ScanUrlInfo {
 }
 
 /**
+ * URL discovered by domain scan (/v1/scan).
+ */
+export interface DomainScanUrlInfo {
+  url: string;
+  host: string;
+  status: string;
+  relevanceScore?: number;
+  headData?: Record<string, unknown>;
+}
+
+/**
+ * Response from domain scan (/v1/scan).
+ */
+export interface ScanResult {
+  success: boolean;
+  domain: string;
+  totalUrls: number;
+  hostsFound: number;
+  mode: string;
+  urls: DomainScanUrlInfo[];
+  durationMs: number;
+  error?: string;
+}
+
+/**
+ * Options for the scan() method.
+ */
+export interface ScanOptions {
+  mode?: 'default' | 'deep';
+  maxUrls?: number;
+  includeSubdomains?: boolean;
+  extractHead?: boolean;
+  soft404Detection?: boolean;
+  query?: string;
+  scoreThreshold?: number;
+  force?: boolean;
+  probeThreshold?: number;
+}
+
+/**
  * Deep crawl response.
  */
 export interface DeepCrawlResult {
@@ -136,6 +176,35 @@ export interface DeepCrawlResult {
   htmlDownloadUrl?: string;
   cacheExpiresAt?: string;
   crawlJobId?: string;
+}
+
+/**
+ * Create ScanResult from API response.
+ */
+export function scanResultFromDict(data: Record<string, unknown>): ScanResult {
+  const urls: DomainScanUrlInfo[] = [];
+  if (data.urls && Array.isArray(data.urls)) {
+    for (const u of data.urls as Record<string, unknown>[]) {
+      urls.push({
+        url: (u.url || '') as string,
+        host: (u.host || '') as string,
+        status: (u.status || 'valid') as string,
+        relevanceScore: u.relevance_score as number | undefined,
+        headData: u.head_data as Record<string, unknown> | undefined,
+      });
+    }
+  }
+
+  return {
+    success: (data.success || false) as boolean,
+    domain: (data.domain || '') as string,
+    totalUrls: (data.total_urls || 0) as number,
+    hostsFound: (data.hosts_found || 0) as number,
+    mode: (data.mode || 'default') as string,
+    urls,
+    durationMs: (data.duration_ms || 0) as number,
+    error: data.error as string | undefined,
+  };
 }
 
 /**
@@ -464,4 +533,303 @@ export function crawlResultFromDict(data: Record<string, unknown>): CrawlResult 
     downloadedFiles: data.downloaded_files as string[] | undefined,
     usage: data.usage ? usageFromDict(data.usage as Record<string, unknown>) : undefined,
   };
+}
+
+
+// =============================================================================
+// Wrapper API Types
+// =============================================================================
+
+export interface WrapperUsage {
+  creditsUsed: number;
+  creditsRemaining: number;
+}
+
+export interface MarkdownResponse {
+  success: boolean;
+  url: string;
+  markdown?: string;
+  fitMarkdown?: string;
+  fitHtml?: string;
+  links?: Record<string, unknown>;
+  media?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  tables?: unknown[];
+  durationMs: number;
+  usage?: WrapperUsage;
+  errorMessage?: string;
+}
+
+export interface ScreenshotResponse {
+  success: boolean;
+  url: string;
+  screenshot?: string;
+  pdf?: string;
+  durationMs: number;
+  usage?: WrapperUsage;
+  errorMessage?: string;
+}
+
+export interface ExtractResponse {
+  success: boolean;
+  url?: string;
+  data?: Record<string, unknown>[];
+  methodUsed?: string;
+  schemaUsed?: Record<string, unknown>;
+  queryUsed?: string;
+  llmUsage?: LLMUsage;
+  durationMs: number;
+  errorMessage?: string;
+}
+
+export interface MapUrlInfo {
+  url: string;
+  host: string;
+  status: string;
+  relevanceScore?: number;
+  headData?: Record<string, unknown>;
+}
+
+export interface MapResponse {
+  success: boolean;
+  domain: string;
+  totalUrls: number;
+  hostsFound: number;
+  mode: string;
+  urls: MapUrlInfo[];
+  durationMs: number;
+  errorMessage?: string;
+}
+
+export interface SiteCrawlResponse {
+  jobId: string;
+  status: string;
+  strategy: string;
+  discoveredUrls: number;
+  queuedUrls: number;
+  createdAt: string;
+}
+
+export interface WrapperJobProgress {
+  total: number;
+  completed: number;
+  failed: number;
+}
+
+export interface WrapperJob {
+  jobId: string;
+  status: string;
+  progress?: WrapperJobProgress;
+  progressPercent: number;
+  urlsCount: number;
+  error?: string;
+  createdAt?: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface MarkdownOptions {
+  strategy?: 'browser' | 'http';
+  fit?: boolean;
+  include?: string[];
+  crawlerConfig?: Record<string, unknown>;
+  browserConfig?: Record<string, unknown>;
+  proxy?: Record<string, unknown>;
+  bypassCache?: boolean;
+}
+
+export interface MarkdownManyOptions extends MarkdownOptions {
+  wait?: boolean;
+  pollInterval?: number;
+  timeout?: number;
+  webhookUrl?: string;
+  priority?: number;
+}
+
+export interface ScreenshotOptions {
+  fullPage?: boolean;
+  pdf?: boolean;
+  waitFor?: string;
+  crawlerConfig?: Record<string, unknown>;
+  browserConfig?: Record<string, unknown>;
+  proxy?: Record<string, unknown>;
+  bypassCache?: boolean;
+}
+
+export interface ScreenshotManyOptions extends ScreenshotOptions {
+  wait?: boolean;
+  pollInterval?: number;
+  timeout?: number;
+  webhookUrl?: string;
+  priority?: number;
+}
+
+export interface ExtractOptions {
+  query?: string;
+  jsonExample?: Record<string, unknown>;
+  schema?: Record<string, unknown>;
+  method?: 'auto' | 'llm' | 'schema';
+  strategy?: 'browser' | 'http';
+  crawlerConfig?: Record<string, unknown>;
+  browserConfig?: Record<string, unknown>;
+  llmConfig?: Record<string, unknown>;
+  proxy?: Record<string, unknown>;
+  bypassCache?: boolean;
+}
+
+export interface ExtractManyOptions extends Omit<ExtractOptions, 'method'> {
+  method: 'llm' | 'schema';
+  wait?: boolean;
+  pollInterval?: number;
+  timeout?: number;
+  webhookUrl?: string;
+  priority?: number;
+}
+
+export interface MapOptions {
+  mode?: 'default' | 'deep';
+  maxUrls?: number;
+  includeSubdomains?: boolean;
+  extractHead?: boolean;
+  query?: string;
+  scoreThreshold?: number;
+  force?: boolean;
+  proxy?: Record<string, unknown>;
+}
+
+export interface SiteCrawlOptions {
+  maxPages?: number;
+  discovery?: 'map' | 'bfs' | 'dfs' | 'best_first';
+  strategy?: 'browser' | 'http';
+  fit?: boolean;
+  include?: string[];
+  pattern?: string;
+  maxDepth?: number;
+  crawlerConfig?: Record<string, unknown>;
+  browserConfig?: Record<string, unknown>;
+  proxy?: Record<string, unknown>;
+  webhookUrl?: string;
+  priority?: number;
+  wait?: boolean;
+  pollInterval?: number;
+  timeout?: number;
+}
+
+// Wrapper fromDict helpers
+
+function wrapperUsageFromDict(data: Record<string, unknown>): WrapperUsage {
+  return {
+    creditsUsed: (data.credits_used || 0) as number,
+    creditsRemaining: (data.credits_remaining || 0) as number,
+  };
+}
+
+export function markdownResponseFromDict(data: Record<string, unknown>): MarkdownResponse {
+  return {
+    success: (data.success || false) as boolean,
+    url: (data.url || '') as string,
+    markdown: data.markdown as string | undefined,
+    fitMarkdown: data.fit_markdown as string | undefined,
+    fitHtml: data.fit_html as string | undefined,
+    links: data.links as Record<string, unknown> | undefined,
+    media: data.media as Record<string, unknown> | undefined,
+    metadata: data.metadata as Record<string, unknown> | undefined,
+    tables: data.tables as unknown[] | undefined,
+    durationMs: (data.duration_ms || 0) as number,
+    usage: data.usage ? wrapperUsageFromDict(data.usage as Record<string, unknown>) : undefined,
+    errorMessage: data.error_message as string | undefined,
+  };
+}
+
+export function screenshotResponseFromDict(data: Record<string, unknown>): ScreenshotResponse {
+  return {
+    success: (data.success || false) as boolean,
+    url: (data.url || '') as string,
+    screenshot: data.screenshot as string | undefined,
+    pdf: data.pdf as string | undefined,
+    durationMs: (data.duration_ms || 0) as number,
+    usage: data.usage ? wrapperUsageFromDict(data.usage as Record<string, unknown>) : undefined,
+    errorMessage: data.error_message as string | undefined,
+  };
+}
+
+export function extractResponseFromDict(data: Record<string, unknown>): ExtractResponse {
+  let llmUsage: LLMUsage | undefined;
+  if (data.llm_usage) {
+    const u = data.llm_usage as Record<string, unknown>;
+    llmUsage = {
+      promptTokens: (u.prompt_tokens || 0) as number,
+      completionTokens: (u.completion_tokens || 0) as number,
+      totalTokens: (u.total_tokens || 0) as number,
+    };
+  }
+  return {
+    success: (data.success || false) as boolean,
+    url: data.url as string | undefined,
+    data: data.data as Record<string, unknown>[] | undefined,
+    methodUsed: data.method_used as string | undefined,
+    schemaUsed: data.schema_used as Record<string, unknown> | undefined,
+    queryUsed: data.query_used as string | undefined,
+    llmUsage,
+    durationMs: (data.duration_ms || 0) as number,
+    errorMessage: data.error_message as string | undefined,
+  };
+}
+
+export function mapResponseFromDict(data: Record<string, unknown>): MapResponse {
+  const urls = ((data.urls || []) as Record<string, unknown>[]).map((u) => ({
+    url: (u.url || '') as string,
+    host: (u.host || '') as string,
+    status: (u.status || 'valid') as string,
+    relevanceScore: u.relevance_score as number | undefined,
+    headData: u.head_data as Record<string, unknown> | undefined,
+  }));
+  return {
+    success: (data.success || false) as boolean,
+    domain: (data.domain || '') as string,
+    totalUrls: (data.total_urls || 0) as number,
+    hostsFound: (data.hosts_found || 0) as number,
+    mode: (data.mode || 'default') as string,
+    urls,
+    durationMs: (data.duration_ms || 0) as number,
+    errorMessage: data.error_message as string | undefined,
+  };
+}
+
+export function siteCrawlResponseFromDict(data: Record<string, unknown>): SiteCrawlResponse {
+  return {
+    jobId: (data.job_id || '') as string,
+    status: (data.status || 'pending') as string,
+    strategy: (data.strategy || 'map') as string,
+    discoveredUrls: (data.discovered_urls || 0) as number,
+    queuedUrls: (data.queued_urls || 0) as number,
+    createdAt: (data.created_at || '') as string,
+  };
+}
+
+export function wrapperJobFromDict(data: Record<string, unknown>): WrapperJob {
+  let progress: WrapperJobProgress | undefined;
+  if (data.progress) {
+    const p = data.progress as Record<string, unknown>;
+    progress = {
+      total: (p.total || 0) as number,
+      completed: (p.completed || 0) as number,
+      failed: (p.failed || 0) as number,
+    };
+  }
+  return {
+    jobId: (data.job_id || '') as string,
+    status: (data.status || 'pending') as string,
+    progress,
+    progressPercent: (data.progress_percent || 0) as number,
+    urlsCount: (data.urls_count || 0) as number,
+    error: data.error as string | undefined,
+    createdAt: data.created_at as string | undefined,
+    startedAt: data.started_at as string | undefined,
+    completedAt: data.completed_at as string | undefined,
+  };
+}
+
+export function isWrapperJobComplete(job: WrapperJob): boolean {
+  return ['completed', 'partial', 'failed', 'cancelled'].includes(job.status);
 }

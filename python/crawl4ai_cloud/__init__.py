@@ -17,7 +17,7 @@ Example:
     ```
 """
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 # Main crawler class
 from .crawler import AsyncWebCrawler
@@ -69,6 +69,13 @@ from .models import (
     SiteCrawlProgress,
     WrapperJob,
     WrapperJobProgress,
+    # Enrich API models
+    EnrichFieldSource,
+    EnrichSearchCitation,
+    EnrichRow,
+    EnrichJobProgress,
+    EnrichResponse,
+    EnrichJobStatus,
 )
 
 # Errors
@@ -100,6 +107,8 @@ __all__ = [
     "WrapperUsage", "MarkdownResponse", "ScreenshotResponse", "ExtractResponse",
     "MapUrlInfo", "MapResponse", "SiteCrawlResponse", "SiteCrawlJobStatus",
     "SiteCrawlProgress", "WrapperJob", "WrapperJobProgress",
+    "EnrichFieldSource", "EnrichSearchCitation", "EnrichRow",
+    "EnrichJobProgress", "EnrichResponse", "EnrichJobStatus",
     # Errors
     "CloudError", "AuthenticationError", "RateLimitError", "QuotaExceededError",
     "NotFoundError", "ValidationError", "TimeoutError", "ServerError",

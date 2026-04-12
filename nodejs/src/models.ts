@@ -1114,3 +1114,178 @@ export function wrapperJobFromDict(data: Record<string, unknown>): WrapperJob {
 export function isWrapperJobComplete(job: WrapperJob): boolean {
   return ['completed', 'partial', 'failed', 'cancelled'].includes(job.status);
 }
+
+
+// =============================================================================
+// Enrich API Types
+// =============================================================================
+
+/**
+ * Source attribution for a single enriched field.
+ */
+export interface EnrichFieldSource {
+  url: string;
+  method: string; // "direct", "depth", "search"
+}
+
+/**
+ * Citation for a field found via search fallback.
+ */
+export interface EnrichSearchCitation {
+  field: string;
+  sourceUrl: string;
+  sourceTitle: string;
+  queryUsed: string;
+}
+
+/**
+ * Result for a single URL in an enrichment job.
+ */
+export interface EnrichRow {
+  url: string;
+  fields: Record<string, unknown>;
+  missing: string[];
+  sources: Record<string, EnrichFieldSource>;
+  searchCitations: EnrichSearchCitation[];
+  status: string; // "complete", "partial", "failed", "pending"
+  depthUsed: number;
+  searchUsed: boolean;
+  tokenUsage?: Record<string, number>;
+  durationMs: number;
+  error?: string;
+}
+
+/**
+ * Progress for an enrichment job.
+ */
+export interface EnrichJobProgress {
+  total: number;
+  completed: number;
+  failed: number;
+}
+
+/**
+ * Response from POST /v1/enrich.
+ */
+export interface EnrichResponse {
+  jobId: string;
+  status: string;
+  urlsCount: number;
+  schemaFields: number;
+  createdAt: string;
+}
+
+/**
+ * Polling response for GET /v1/enrich/jobs/{job_id}.
+ */
+export interface EnrichJobStatus {
+  jobId: string;
+  status: string;
+  progress: EnrichJobProgress;
+  progressPercent: number;
+  rows?: EnrichRow[];
+  createdAt?: string;
+  startedAt?: string;
+  completedAt?: string;
+  error?: string;
+}
+
+/**
+ * Create EnrichResponse from API response.
+ */
+export function enrichResponseFromDict(data: Record<string, unknown>): EnrichResponse {
+  return {
+    jobId: (data.job_id || '') as string,
+    status: (data.status || 'pending') as string,
+    urlsCount: (data.urls_count || 0) as number,
+    schemaFields: (data.schema_fields || 0) as number,
+    createdAt: (data.created_at || '') as string,
+  };
+}
+
+/**
+ * Create EnrichRow from API response.
+ */
+function enrichRowFromDict(data: Record<string, unknown>): EnrichRow {
+  const sources: Record<string, EnrichFieldSource> = {};
+  const rawSources = (data.sources || {}) as Record<string, unknown>;
+  for (const [fname, src] of Object.entries(rawSources)) {
+    if (src && typeof src === 'object') {
+      const s = src as Record<string, unknown>;
+      sources[fname] = {
+        url: (s.url || '') as string,
+        method: (s.method || '') as string,
+      };
+    } else {
+      sources[fname] = { url: '', method: '' };
+    }
+  }
+
+  const citations: EnrichSearchCitation[] = [];
+  const rawCitations = (data.search_citations || []) as Record<string, unknown>[];
+  for (const c of rawCitations) {
+    citations.push({
+      field: (c.field || '') as string,
+      sourceUrl: (c.source_url || '') as string,
+      sourceTitle: (c.source_title || '') as string,
+      queryUsed: (c.query_used || '') as string,
+    });
+  }
+
+  return {
+    url: (data.url || '') as string,
+    fields: (data.fields || {}) as Record<string, unknown>,
+    missing: (data.missing || []) as string[],
+    sources,
+    searchCitations: citations,
+    status: (data.status || 'pending') as string,
+    depthUsed: (data.depth_used || 0) as number,
+    searchUsed: (data.search_used || false) as boolean,
+    tokenUsage: data.token_usage as Record<string, number> | undefined,
+    durationMs: (data.duration_ms || 0) as number,
+    error: data.error as string | undefined,
+  };
+}
+
+/**
+ * Create EnrichJobStatus from API response.
+ */
+export function enrichJobStatusFromDict(data: Record<string, unknown>): EnrichJobStatus {
+  const progressData = (data.progress || {}) as Record<string, unknown>;
+  const progress: EnrichJobProgress = {
+    total: (progressData.total || 0) as number,
+    completed: (progressData.completed || 0) as number,
+    failed: (progressData.failed || 0) as number,
+  };
+
+  let rows: EnrichRow[] | undefined;
+  if (data.rows !== undefined && data.rows !== null) {
+    rows = (data.rows as Record<string, unknown>[]).map(enrichRowFromDict);
+  }
+
+  return {
+    jobId: (data.job_id || '') as string,
+    status: (data.status || 'pending') as string,
+    progress,
+    progressPercent: (data.progress_percent || 0) as number,
+    rows,
+    createdAt: data.created_at as string | undefined,
+    startedAt: data.started_at as string | undefined,
+    completedAt: data.completed_at as string | undefined,
+    error: data.error as string | undefined,
+  };
+}
+
+/**
+ * True when an enrich job has reached a terminal state.
+ */
+export function isEnrichJobComplete(job: EnrichJobStatus): boolean {
+  return ['completed', 'partial', 'failed', 'cancelled'].includes(job.status);
+}
+
+/**
+ * True when an enrich job completed successfully (with or without partial results).
+ */
+export function isEnrichJobSuccessful(job: EnrichJobStatus): boolean {
+  return ['completed', 'partial'].includes(job.status);
+}

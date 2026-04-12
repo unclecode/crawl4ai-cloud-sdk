@@ -48,6 +48,13 @@ export type {
   ExtractManyOptions,
   MapOptions,
   SiteCrawlOptions,
+  // Enrich API types
+  EnrichFieldSource,
+  EnrichSearchCitation,
+  EnrichRow,
+  EnrichJobProgress,
+  EnrichResponse,
+  EnrichJobStatus,
 } from './models';
 
 // Configuration types and helpers
@@ -118,6 +125,11 @@ export {
   isSiteCrawlJobComplete,
   siteScanConfigToDict,
   siteExtractConfigToDict,
+  // Enrich helpers
+  enrichResponseFromDict,
+  enrichJobStatusFromDict,
+  isEnrichJobComplete,
+  isEnrichJobSuccessful,
 } from './models';
 
 // Errors

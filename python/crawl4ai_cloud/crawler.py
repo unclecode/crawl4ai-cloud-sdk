@@ -1658,6 +1658,115 @@ class AsyncWebCrawler:
         return await self._cancel_wrapper_job(job_id, "extract")
 
     # -------------------------------------------------------------------------
+    # Enrich
+    # -------------------------------------------------------------------------
+
+    async def enrich(
+        self,
+        urls: List[str],
+        schema: List[Dict[str, str]],
+        *,
+        max_depth: int = 1,
+        max_links: int = 5,
+        enable_search: bool = False,
+        retry_count: int = 1,
+        strategy: str = "browser",
+        llm_config: Optional[Dict[str, Any]] = None,
+        proxy: Optional[Union[str, Dict[str, Any], "ProxyConfig"]] = None,
+        webhook_url: Optional[str] = None,
+        priority: int = 5,
+        wait: bool = True,
+        poll_interval: float = 3.0,
+        timeout: Optional[float] = 600.0,
+    ) -> "EnrichJobStatus":
+        """
+        Enrich a list of URLs by extracting specified fields.
+
+        Each URL becomes a row in the output table. The pipeline crawls each URL,
+        follows links to find missing fields, and optionally searches Google.
+
+        Args:
+            urls: URLs to enrich (1-100).
+            schema: Fields to extract. Each is {"name": "...", "description": "..."}.
+            max_depth: Link-following depth (0=page only). Default 1.
+            max_links: Max sub-pages per depth level. Default 5.
+            enable_search: Fall back to Google Search for missing fields. Default False.
+            strategy: "browser" (default) or "http".
+            wait: If True (default), poll until job completes.
+            poll_interval: Seconds between polls. Default 3.
+            timeout: Max seconds to wait. Default 600.
+
+        Returns:
+            EnrichJobStatus with rows containing extracted fields and sources.
+        """
+        from crawl4ai_cloud.models import EnrichResponse, EnrichJobStatus
+
+        body: Dict[str, Any] = {
+            "urls": urls,
+            "schema": schema,
+            "config": {
+                "max_depth": max_depth,
+                "max_links": max_links,
+                "enable_search": enable_search,
+                "retry_count": retry_count,
+            },
+            "strategy": strategy,
+            "priority": priority,
+        }
+        if llm_config:
+            body["llm_config"] = llm_config
+        if proxy:
+            body["proxy"] = normalize_proxy(proxy)
+        if webhook_url:
+            body["webhook_url"] = webhook_url
+
+        data = await self._http.request("POST", "/v1/enrich", json=body)
+        resp = EnrichResponse.from_dict(data)
+
+        if wait:
+            return await self._wait_enrich_job(resp.job_id, poll_interval, timeout)
+
+        # Return minimal status when not waiting
+        return EnrichJobStatus(
+            job_id=resp.job_id,
+            status=resp.status,
+            created_at=resp.created_at,
+        )
+
+    async def get_enrich_job(self, job_id: str) -> "EnrichJobStatus":
+        """Poll an enrichment job for status and completed rows."""
+        from crawl4ai_cloud.models import EnrichJobStatus
+        data = await self._http.request("GET", f"/v1/enrich/jobs/{job_id}")
+        return EnrichJobStatus.from_dict(data)
+
+    async def list_enrich_jobs(self, limit: int = 20, offset: int = 0) -> List["EnrichJobStatus"]:
+        """List enrichment jobs for the authenticated user."""
+        from crawl4ai_cloud.models import EnrichJobStatus
+        data = await self._http.request("GET", "/v1/enrich/jobs", params={"limit": limit, "offset": offset})
+        return [EnrichJobStatus.from_dict(j) for j in data.get("jobs", [])]
+
+    async def cancel_enrich_job(self, job_id: str) -> bool:
+        """Cancel an enrichment job."""
+        await self._http.request("DELETE", f"/v1/enrich/jobs/{job_id}")
+        return True
+
+    async def _wait_enrich_job(
+        self, job_id: str, poll_interval: float = 3.0, timeout: Optional[float] = None,
+    ) -> "EnrichJobStatus":
+        """Poll /v1/enrich/jobs/{id} until the job finishes."""
+        start = time.time()
+        while True:
+            job = await self.get_enrich_job(job_id)
+            if job.is_complete:
+                return job
+            if timeout and (time.time() - start) > timeout:
+                raise TimeoutError(
+                    f"Enrich job {job_id} did not complete within {timeout}s. "
+                    f"Status: {job.status}, progress: {job.progress.completed}/{job.progress.total}"
+                )
+            await asyncio.sleep(poll_interval)
+
+    # -------------------------------------------------------------------------
     # Context Manager
     # -------------------------------------------------------------------------
 

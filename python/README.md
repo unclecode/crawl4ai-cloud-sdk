@@ -62,9 +62,10 @@ asyncio.run(main())
 | `extract(url, query=...)` | Extracts structured data (auto/LLM/CSS schema) | `POST /v1/extract` |
 | `map(url)` | Simple URL discovery on a domain (always sync) | `POST /v1/map` |
 | `scan(url, criteria=...)` | **AI-assisted** URL discovery with plain-English criteria + map/deep routing | `POST /v1/scan` |
-| `crawl_site(url, criteria=..., extract=...)` | **AI-assisted** full site crawl — LLM generates scan config + extraction schema | `POST /v1/crawl/site` |
+| `crawl_site(url, criteria=..., extract=...)` | **AI-assisted** full site crawl -- LLM generates scan config + extraction schema | `POST /v1/crawl/site` |
+| `enrich(urls, schema)` | Build a data table from URLs -- per-URL enrichment with depth + search | `POST /v1/enrich` |
 
-Each method returns a typed response object (`MarkdownResponse`, `ScreenshotResponse`, `ExtractResponse`, `MapResponse`, `ScanResult`, `SiteCrawlResponse`) with `.success`, `.duration_ms`, and `.usage` fields.
+Each method returns a typed response object (`MarkdownResponse`, `ScreenshotResponse`, `ExtractResponse`, `MapResponse`, `ScanResult`, `SiteCrawlResponse`, `EnrichJobStatus`) with relevant status and data fields.
 
 ### AI-assisted flows (v0.4.0)
 
@@ -145,7 +146,69 @@ job = await crawler.crawl_site(
 )
 ```
 
-**Drop markdown with `include`**: if you pass `include=["links", "media"]` without `"markdown"`, the worker force-strips markdown from every result — saves bandwidth for extract-only crawls.
+**Drop markdown with `include`**: if you pass `include=["links", "media"]` without `"markdown"`, the worker force-strips markdown from every result -- saves bandwidth for extract-only crawls.
+
+### Enrich (v0.5.0)
+
+Build a data table from URLs. Define columns, provide URLs, and the pipeline crawls each URL, follows links to find missing fields, and optionally searches Google as a fallback.
+
+```python
+async with AsyncWebCrawler(api_key="sk_live_...") as crawler:
+
+    # Basic enrichment -- depth 0, no search
+    result = await crawler.enrich(
+        urls=["https://kidocode.com", "https://brightchamps.com"],
+        schema=[
+            {"name": "Company Name"},
+            {"name": "Email", "description": "primary contact email"},
+            {"name": "Phone", "description": "phone number"},
+        ],
+        max_depth=0,
+        enable_search=False,
+    )
+
+    for row in result.rows:
+        print(f"{row.url}: {row.fields}")
+        # Sources show where each field was found
+        for field, src in row.sources.items():
+            print(f"  {field}: {src.method} from {src.url}")
+
+    # With depth + search fallback
+    result = await crawler.enrich(
+        urls=["https://brightchamps.com"],
+        schema=[
+            {"name": "Company Name"},
+            {"name": "Email"},
+            {"name": "Phone"},
+            {"name": "Address", "description": "HQ or office address"},
+        ],
+        max_depth=1,           # follow internal links
+        max_links=3,           # check up to 3 sub-pages
+        enable_search=True,    # Google Search fallback
+    )
+
+    row = result.rows[0]
+    print(f"Status: {row.status}")   # "complete", "partial", or "failed"
+    print(f"Missing: {row.missing}") # fields that couldn't be found
+
+    # Fire-and-forget + manual polling
+    job = await crawler.enrich(
+        urls=["https://example1.com", "https://example2.com"],
+        schema=[{"name": "Title"}],
+        wait=False,  # returns immediately with job_id
+    )
+    print(f"Job: {job.job_id}")
+
+    # Poll
+    status = await crawler.get_enrich_job(job.job_id)
+    print(f"Progress: {status.progress.completed}/{status.progress.total}")
+
+    # List recent jobs
+    jobs = await crawler.list_enrich_jobs(limit=5)
+
+    # Cancel
+    await crawler.cancel_enrich_job(job.job_id)
+```
 
 ## Async / Batch
 

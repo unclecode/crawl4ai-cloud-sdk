@@ -134,6 +134,41 @@ for {
 }
 ```
 
+### Enrich URLs (build a data table)
+
+```go
+result, err := crawler.Enrich(
+    []string{"https://kidocode.com", "https://brightchamps.com"},
+    []crawl4ai.EnrichFieldSpec{
+        {Name: "Company Name"},
+        {Name: "Email", Description: "primary contact email"},
+        {Name: "Phone", Description: "phone number"},
+    },
+    &crawl4ai.EnrichOptions{
+        MaxDepth:     1,
+        EnableSearch: true,
+        Wait:         true,
+        Timeout:      120 * time.Second,
+    },
+)
+if err != nil {
+    log.Fatal(err)
+}
+
+for _, row := range result.Rows {
+    fmt.Printf("%s: %v\n", row.URL, row.Fields)
+    for field, src := range row.Sources {
+        fmt.Printf("  %s: %s from %s\n", field, src.Method, src.URL)
+    }
+}
+
+// Fire-and-forget + manual poll
+job, _ := crawler.Enrich(urls, schema, &crawl4ai.EnrichOptions{Wait: false})
+status, _ := crawler.GetEnrichJob(job.JobID)
+jobs, _ := crawler.ListEnrichJobs(5, 0)
+_ = crawler.CancelEnrichJob(job.JobID)
+```
+
 ## Wrapper API Reference
 
 | Method | Endpoint | Returns | What it does |
@@ -144,6 +179,7 @@ for {
 | `Map(url, opts)` | `POST /v1/map` | `*MapResponse` | Simple URL discovery (always sync) |
 | `Scan(url, opts)` | `POST /v1/scan` | `*ScanResult` | **AI-assisted** URL discovery with plain-English criteria |
 | `CrawlSite(url, opts)` | `POST /v1/crawl/site` | `*SiteCrawlResponse` | **AI-assisted** whole-site crawl (always async) |
+| `Enrich(urls, schema, opts)` | `POST /v1/enrich` | `*EnrichJobStatus` | Per-URL data enrichment with depth + search |
 
 Every wrapper method accepts `nil` for options to use sensible defaults.
 

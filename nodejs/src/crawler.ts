@@ -56,6 +56,11 @@ import {
   isSiteCrawlJobComplete,
   wrapperJobFromDict,
   isWrapperJobComplete,
+  EnrichResponse,
+  EnrichJobStatus,
+  enrichResponseFromDict,
+  enrichJobStatusFromDict,
+  isEnrichJobComplete,
 } from './models';
 import {
   CrawlerRunConfig,
@@ -1122,6 +1127,147 @@ export class AsyncWebCrawler {
   async cancelMarkdownJob(jobId: string): Promise<boolean> { await this.http.delete(`/v1/markdown/jobs/${jobId}`); return true; }
   async cancelScreenshotJob(jobId: string): Promise<boolean> { await this.http.delete(`/v1/screenshot/jobs/${jobId}`); return true; }
   async cancelExtractJob(jobId: string): Promise<boolean> { await this.http.delete(`/v1/extract/jobs/${jobId}`); return true; }
+
+  // =========================================================================
+  // Enrich API
+  // =========================================================================
+
+  /**
+   * Enrich a list of URLs by extracting specified fields.
+   *
+   * Each URL becomes a row in the output table. The pipeline crawls each URL,
+   * follows links to find missing fields, and optionally searches Google.
+   *
+   * @param urls - URLs to enrich (1-100).
+   * @param schema - Fields to extract. Each is {name: "...", description?: "..."}.
+   * @param options - Enrichment options.
+   * @returns EnrichJobStatus with rows containing extracted fields and sources.
+   *
+   * @example
+   * ```typescript
+   * const result = await crawler.enrich(
+   *   ['https://kidocode.com'],
+   *   [{ name: 'Company Name' }, { name: 'Email', description: 'contact email' }],
+   *   { maxDepth: 1, wait: true, timeout: 120 },
+   * );
+   * console.log(result.rows?.[0].fields);
+   * ```
+   */
+  async enrich(
+    urls: string[],
+    schema: Array<{ name: string; description?: string }>,
+    options: {
+      maxDepth?: number;
+      maxLinks?: number;
+      enableSearch?: boolean;
+      retryCount?: number;
+      strategy?: 'browser' | 'http';
+      llmConfig?: Record<string, unknown>;
+      proxy?: string | Record<string, unknown>;
+      webhookUrl?: string;
+      priority?: number;
+      wait?: boolean;
+      pollInterval?: number;
+      timeout?: number;
+    } = {},
+  ): Promise<EnrichJobStatus> {
+    const {
+      maxDepth = 1,
+      maxLinks = 5,
+      enableSearch = false,
+      retryCount = 1,
+      strategy = 'browser',
+      llmConfig,
+      proxy,
+      webhookUrl,
+      priority = 5,
+      wait = true,
+      pollInterval = 3.0,
+      timeout = 600,
+    } = options;
+
+    const body: Record<string, unknown> = {
+      urls,
+      schema,
+      config: {
+        max_depth: maxDepth,
+        max_links: maxLinks,
+        enable_search: enableSearch,
+        retry_count: retryCount,
+      },
+      strategy,
+      priority,
+    };
+    if (llmConfig) body.llm_config = llmConfig;
+    if (proxy) {
+      body.proxy = typeof proxy === 'string' ? { mode: proxy } : proxy;
+    }
+    if (webhookUrl) body.webhook_url = webhookUrl;
+
+    const data = await this.http.post('/v1/enrich', body);
+    const resp = enrichResponseFromDict(data);
+
+    if (wait) {
+      return this.waitEnrichJob(resp.jobId, pollInterval, timeout);
+    }
+
+    // Return minimal status when not waiting
+    return {
+      jobId: resp.jobId,
+      status: resp.status,
+      progress: { total: 0, completed: 0, failed: 0 },
+      progressPercent: 0,
+      createdAt: resp.createdAt,
+    };
+  }
+
+  /**
+   * Poll an enrichment job for status and completed rows.
+   */
+  async getEnrichJob(jobId: string): Promise<EnrichJobStatus> {
+    const data = await this.http.get(`/v1/enrich/jobs/${jobId}`);
+    return enrichJobStatusFromDict(data);
+  }
+
+  /**
+   * List enrichment jobs for the authenticated user.
+   */
+  async listEnrichJobs(options: {
+    limit?: number;
+    offset?: number;
+  } = {}): Promise<EnrichJobStatus[]> {
+    const { limit = 20, offset = 0 } = options;
+    const params: Record<string, string | number> = { limit, offset };
+    const data = await this.http.get('/v1/enrich/jobs', params);
+    return ((data.jobs || []) as Record<string, unknown>[]).map(enrichJobStatusFromDict);
+  }
+
+  /**
+   * Cancel an enrichment job.
+   */
+  async cancelEnrichJob(jobId: string): Promise<boolean> {
+    await this.http.delete(`/v1/enrich/jobs/${jobId}`);
+    return true;
+  }
+
+  private async waitEnrichJob(
+    jobId: string,
+    pollInterval: number = 3.0,
+    timeout?: number,
+  ): Promise<EnrichJobStatus> {
+    const start = Date.now();
+    while (true) {
+      const job = await this.getEnrichJob(jobId);
+      if (isEnrichJobComplete(job)) return job;
+      if (timeout && Date.now() - start > timeout * 1000) {
+        throw new TimeoutError(
+          `Enrich job ${jobId} did not complete within ${timeout}s. ` +
+            `Status: ${job.status}, progress: ${job.progress.completed}/${job.progress.total}`,
+        );
+      }
+      await this.sleep(pollInterval * 1000);
+    }
+  }
 
   /**
    * Close the client (no-op for now, but provided for API compatibility).

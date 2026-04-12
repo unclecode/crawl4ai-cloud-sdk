@@ -838,6 +838,120 @@ func GeneratedSchemaFromMap(data map[string]interface{}) *GeneratedSchema {
 }
 
 // =============================================================================
+// Enrich API Models
+// =============================================================================
+
+// EnrichFieldSpec describes a field to extract during enrichment.
+type EnrichFieldSpec struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+// EnrichConfig configures enrichment crawl behavior.
+type EnrichConfig struct {
+	MaxDepth     int  `json:"max_depth"`
+	MaxLinks     int  `json:"max_links"`
+	EnableSearch bool `json:"enable_search"`
+	RetryCount   int  `json:"retry_count"`
+}
+
+// EnrichFieldSource is source attribution for a single enriched field.
+type EnrichFieldSource struct {
+	URL    string `json:"url"`
+	Method string `json:"method"` // "direct", "depth", "search"
+}
+
+// EnrichSearchCitation is a citation for a field found via search fallback.
+type EnrichSearchCitation struct {
+	Field       string `json:"field"`
+	SourceURL   string `json:"source_url"`
+	SourceTitle string `json:"source_title"`
+	QueryUsed   string `json:"query_used"`
+}
+
+// EnrichRow is the result for a single URL in an enrichment job.
+type EnrichRow struct {
+	URL              string                        `json:"url"`
+	Fields           map[string]interface{}         `json:"fields"`
+	Missing          []string                       `json:"missing"`
+	Sources          map[string]EnrichFieldSource   `json:"sources"`
+	SearchCitations  []EnrichSearchCitation         `json:"search_citations"`
+	Status           string                         `json:"status"` // "complete", "partial", "failed", "pending"
+	DepthUsed        int                            `json:"depth_used"`
+	SearchUsed       bool                           `json:"search_used"`
+	TokenUsage       map[string]int                 `json:"token_usage,omitempty"`
+	DurationMs       int                            `json:"duration_ms"`
+	Error            string                         `json:"error,omitempty"`
+}
+
+// EnrichJobProgress represents progress of an enrichment job.
+type EnrichJobProgress struct {
+	Total     int `json:"total"`
+	Completed int `json:"completed"`
+	Failed    int `json:"failed"`
+}
+
+// Percent returns the completion percentage.
+func (p *EnrichJobProgress) Percent() int {
+	if p.Total == 0 {
+		return 0
+	}
+	return int(float64(p.Completed+p.Failed) / float64(p.Total) * 100)
+}
+
+// EnrichResponse is the response from POST /v1/enrich.
+type EnrichResponse struct {
+	JobID        string `json:"job_id"`
+	Status       string `json:"status"`
+	URLsCount    int    `json:"urls_count"`
+	SchemaFields int    `json:"schema_fields"`
+	CreatedAt    string `json:"created_at"`
+}
+
+// EnrichJobStatus is the polling response for GET /v1/enrich/jobs/{job_id}.
+type EnrichJobStatus struct {
+	JobID           string             `json:"job_id"`
+	Status          string             `json:"status"`
+	Progress        EnrichJobProgress  `json:"progress"`
+	ProgressPercent int                `json:"progress_percent"`
+	Rows            []EnrichRow        `json:"rows,omitempty"`
+	CreatedAt       string             `json:"created_at,omitempty"`
+	StartedAt       string             `json:"started_at,omitempty"`
+	CompletedAt     string             `json:"completed_at,omitempty"`
+	Error           string             `json:"error,omitempty"`
+}
+
+// IsComplete returns true when the enrichment job is in a terminal state.
+func (j *EnrichJobStatus) IsComplete() bool {
+	switch j.Status {
+	case "completed", "partial", "failed", "cancelled":
+		return true
+	}
+	return false
+}
+
+// IsSuccessful returns true when the enrichment job completed with usable results.
+func (j *EnrichJobStatus) IsSuccessful() bool {
+	return j.Status == "completed" || j.Status == "partial"
+}
+
+// EnrichOptions configures an enrichment request.
+type EnrichOptions struct {
+	MaxDepth     int                    `json:"-"`
+	MaxLinks     int                    `json:"-"`
+	EnableSearch bool                   `json:"-"`
+	RetryCount   int                    `json:"-"`
+	Strategy     string                 `json:"-"` // "browser" or "http"
+	LLMConfig    map[string]interface{} `json:"-"`
+	Proxy        map[string]interface{} `json:"-"`
+	WebhookURL   string                 `json:"-"`
+	Priority     int                    `json:"-"`
+	Wait         bool                   `json:"-"`
+	PollInterval time.Duration          `json:"-"`
+	Timeout      time.Duration          `json:"-"`
+}
+
+// =============================================================================
 // Wrapper API Models
 // =============================================================================
 

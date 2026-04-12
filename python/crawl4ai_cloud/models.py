@@ -1024,6 +1024,155 @@ class SiteCrawlJobStatus:
 
 
 @dataclass
+class EnrichFieldSource:
+    """Source attribution for a single enriched field."""
+    url: str = ""
+    method: str = ""  # "direct", "depth", "search"
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "EnrichFieldSource":
+        return cls(url=data.get("url", ""), method=data.get("method", ""))
+
+
+@dataclass
+class EnrichSearchCitation:
+    """Citation for a field found via search fallback."""
+    field: str = ""
+    source_url: str = ""
+    source_title: str = ""
+    query_used: str = ""
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "EnrichSearchCitation":
+        return cls(
+            field=data.get("field", ""),
+            source_url=data.get("source_url", ""),
+            source_title=data.get("source_title", ""),
+            query_used=data.get("query_used", ""),
+        )
+
+
+@dataclass
+class EnrichRow:
+    """Result for a single URL in an enrichment job."""
+    url: str = ""
+    fields: Dict[str, Any] = field(default_factory=dict)
+    missing: List[str] = field(default_factory=list)
+    sources: Dict[str, EnrichFieldSource] = field(default_factory=dict)
+    search_citations: List[EnrichSearchCitation] = field(default_factory=list)
+    status: str = "pending"  # "complete", "partial", "failed"
+    depth_used: int = 0
+    search_used: bool = False
+    token_usage: Optional[Dict[str, int]] = None
+    duration_ms: int = 0
+    error: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "EnrichRow":
+        sources = {}
+        for fname, src in (data.get("sources") or {}).items():
+            sources[fname] = EnrichFieldSource.from_dict(src) if isinstance(src, dict) else EnrichFieldSource()
+        citations = [
+            EnrichSearchCitation.from_dict(c) for c in (data.get("search_citations") or [])
+        ]
+        return cls(
+            url=data.get("url", ""),
+            fields=data.get("fields") or {},
+            missing=data.get("missing") or [],
+            sources=sources,
+            search_citations=citations,
+            status=data.get("status", "pending"),
+            depth_used=data.get("depth_used", 0),
+            search_used=data.get("search_used", False),
+            token_usage=data.get("token_usage"),
+            duration_ms=data.get("duration_ms", 0),
+            error=data.get("error"),
+        )
+
+
+@dataclass
+class EnrichJobProgress:
+    """Progress for an enrichment job."""
+    total: int = 0
+    completed: int = 0
+    failed: int = 0
+
+    @property
+    def percent(self) -> int:
+        if self.total == 0:
+            return 0
+        return int((self.completed + self.failed) / self.total * 100)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "EnrichJobProgress":
+        return cls(
+            total=data.get("total", 0),
+            completed=data.get("completed", 0),
+            failed=data.get("failed", 0),
+        )
+
+
+@dataclass
+class EnrichResponse:
+    """Response from POST /v1/enrich."""
+    job_id: str = ""
+    status: str = "pending"
+    urls_count: int = 0
+    schema_fields: int = 0
+    created_at: str = ""
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "EnrichResponse":
+        return cls(
+            job_id=data.get("job_id", ""),
+            status=data.get("status", "pending"),
+            urls_count=data.get("urls_count", 0),
+            schema_fields=data.get("schema_fields", 0),
+            created_at=data.get("created_at", ""),
+        )
+
+
+@dataclass
+class EnrichJobStatus:
+    """Polling response for GET /v1/enrich/jobs/{job_id}."""
+    job_id: str = ""
+    status: str = "pending"
+    progress: EnrichJobProgress = field(default_factory=EnrichJobProgress)
+    progress_percent: int = 0
+    rows: Optional[List[EnrichRow]] = None
+    created_at: Optional[str] = None
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    error: Optional[str] = None
+
+    @property
+    def is_complete(self) -> bool:
+        return self.status in ("completed", "partial", "failed", "cancelled")
+
+    @property
+    def is_successful(self) -> bool:
+        return self.status in ("completed", "partial")
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "EnrichJobStatus":
+        progress = EnrichJobProgress.from_dict(data.get("progress") or {})
+        rows = None
+        if data.get("rows") is not None:
+            rows = [EnrichRow.from_dict(r) for r in data["rows"]]
+        return cls(
+            job_id=data.get("job_id", ""),
+            status=data.get("status", "pending"),
+            progress=progress,
+            progress_percent=data.get("progress_percent", 0),
+            rows=rows,
+            created_at=data.get("created_at"),
+            started_at=data.get("started_at"),
+            completed_at=data.get("completed_at"),
+            error=data.get("error"),
+        )
+
+
+@dataclass
 class WrapperJobProgress:
     """Progress for a wrapper async job."""
     total: int = 0

@@ -1095,6 +1095,165 @@ func (c *AsyncWebCrawler) waitSiteCrawlJob(jobID string, pollInterval, timeout t
 	}
 }
 
+// =========================================================================
+// Enrich API
+// =========================================================================
+
+// Enrich creates an enrichment job. Each URL becomes a row; the pipeline
+// crawls each URL, follows links to find missing fields, and optionally
+// searches Google. Always async -- set opts.Wait=true to block until done.
+func (c *AsyncWebCrawler) Enrich(urls []string, schema []EnrichFieldSpec, opts *EnrichOptions) (*EnrichJobStatus, error) {
+	if opts == nil {
+		opts = &EnrichOptions{}
+	}
+
+	maxDepth := opts.MaxDepth
+	if maxDepth == 0 {
+		maxDepth = 1
+	}
+	maxLinks := opts.MaxLinks
+	if maxLinks == 0 {
+		maxLinks = 5
+	}
+	retryCount := opts.RetryCount
+	if retryCount == 0 {
+		retryCount = 1
+	}
+	strategy := opts.Strategy
+	if strategy == "" {
+		strategy = "browser"
+	}
+	priority := opts.Priority
+	if priority == 0 {
+		priority = 5
+	}
+
+	// Build schema as []map to match the API shape
+	schemaList := make([]map[string]interface{}, len(schema))
+	for i, f := range schema {
+		m := map[string]interface{}{"name": f.Name}
+		if f.Description != "" {
+			m["description"] = f.Description
+		}
+		schemaList[i] = m
+	}
+
+	body := map[string]interface{}{
+		"urls":   urls,
+		"schema": schemaList,
+		"config": map[string]interface{}{
+			"max_depth":     maxDepth,
+			"max_links":     maxLinks,
+			"enable_search": opts.EnableSearch,
+			"retry_count":   retryCount,
+		},
+		"strategy": strategy,
+		"priority": priority,
+	}
+	if opts.LLMConfig != nil {
+		body["llm_config"] = opts.LLMConfig
+	}
+	if opts.Proxy != nil {
+		body["proxy"] = opts.Proxy
+	}
+	if opts.WebhookURL != "" {
+		body["webhook_url"] = opts.WebhookURL
+	}
+
+	data, err := c.http.Post("/v1/enrich", body, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := unmarshalWrapper[EnrichResponse](data)
+	if err != nil {
+		return nil, err
+	}
+
+	if opts.Wait {
+		pollInterval := opts.PollInterval
+		if pollInterval == 0 {
+			pollInterval = 3 * time.Second
+		}
+		return c.waitEnrichJob(resp.JobID, pollInterval, opts.Timeout)
+	}
+
+	// Return minimal status when not waiting
+	return &EnrichJobStatus{
+		JobID:     resp.JobID,
+		Status:    resp.Status,
+		CreatedAt: resp.CreatedAt,
+	}, nil
+}
+
+// GetEnrichJob polls an enrichment job for status and completed rows.
+func (c *AsyncWebCrawler) GetEnrichJob(jobID string) (*EnrichJobStatus, error) {
+	data, err := c.http.Get(fmt.Sprintf("/v1/enrich/jobs/%s", jobID), nil)
+	if err != nil {
+		return nil, err
+	}
+	return unmarshalWrapper[EnrichJobStatus](data)
+}
+
+// ListEnrichJobs lists enrichment jobs for the authenticated user.
+func (c *AsyncWebCrawler) ListEnrichJobs(limit, offset int) ([]*EnrichJobStatus, error) {
+	if limit == 0 {
+		limit = 20
+	}
+	params := map[string]string{
+		"limit":  fmt.Sprintf("%d", limit),
+		"offset": fmt.Sprintf("%d", offset),
+	}
+
+	data, err := c.http.Get("/v1/enrich/jobs", params)
+	if err != nil {
+		return nil, err
+	}
+
+	jobs := make([]*EnrichJobStatus, 0)
+	if rawJobs, ok := data["jobs"].([]interface{}); ok {
+		for _, j := range rawJobs {
+			if m, ok := j.(map[string]interface{}); ok {
+				job, err := unmarshalWrapper[EnrichJobStatus](m)
+				if err == nil {
+					jobs = append(jobs, job)
+				}
+			}
+		}
+	}
+	return jobs, nil
+}
+
+// CancelEnrichJob cancels an enrichment job.
+func (c *AsyncWebCrawler) CancelEnrichJob(jobID string) error {
+	_, err := c.http.Delete(fmt.Sprintf("/v1/enrich/jobs/%s", jobID))
+	return err
+}
+
+// waitEnrichJob polls /v1/enrich/jobs/{id} until the job finishes.
+func (c *AsyncWebCrawler) waitEnrichJob(jobID string, pollInterval, timeout time.Duration) (*EnrichJobStatus, error) {
+	if pollInterval == 0 {
+		pollInterval = 3 * time.Second
+	}
+	start := time.Now()
+	for {
+		job, err := c.GetEnrichJob(jobID)
+		if err != nil {
+			return nil, err
+		}
+		if job.IsComplete() {
+			return job, nil
+		}
+		if timeout > 0 && time.Since(start) > timeout {
+			return nil, NewTimeoutError(fmt.Sprintf(
+				"enrich job %s did not complete within %v. Status: %s, progress: %d/%d",
+				jobID, timeout, job.Status, job.Progress.Completed, job.Progress.Total,
+			))
+		}
+		time.Sleep(pollInterval)
+	}
+}
+
 // ---- Wrapper job management ----
 
 // GetMarkdownJob gets a markdown async job status.

@@ -89,6 +89,34 @@ while (true) {
 }
 ```
 
+### Enrich URLs (build a data table)
+
+```typescript
+const result = await crawler.enrich(
+  ['https://kidocode.com', 'https://brightchamps.com'],
+  [
+    { name: 'Company Name' },
+    { name: 'Email', description: 'primary contact email' },
+    { name: 'Phone', description: 'phone number' },
+  ],
+  { maxDepth: 1, enableSearch: true },
+);
+
+for (const row of result.rows ?? []) {
+  console.log(`${row.url}: ${JSON.stringify(row.fields)}`);
+  // Sources show where each field was found
+  for (const [field, src] of Object.entries(row.sources)) {
+    console.log(`  ${field}: ${src.method} from ${src.url}`);
+  }
+}
+
+// Fire-and-forget + manual poll
+const job = await crawler.enrich(urls, schema, { wait: false });
+const status = await crawler.getEnrichJob(job.jobId);
+const jobs = await crawler.listEnrichJobs({ limit: 5 });
+await crawler.cancelEnrichJob(job.jobId);
+```
+
 ## Wrapper API Reference
 
 | Method | Endpoint | Returns | Description |
@@ -99,6 +127,7 @@ while (true) {
 | `map(url)` | `POST /v1/map` | `MapResponse` | Simple URL discovery (always sync) |
 | `scan(url, {criteria})` | `POST /v1/scan` | `ScanResult` | **AI-assisted** URL discovery with plain-English criteria |
 | `crawlSite(url, {criteria, extract})` | `POST /v1/crawl/site` | `SiteCrawlResponse` | **AI-assisted** whole-site crawl (always async) |
+| `enrich(urls, schema, opts)` | `POST /v1/enrich` | `EnrichJobStatus` | Per-URL data enrichment with depth + search |
 
 ### Markdown Options
 

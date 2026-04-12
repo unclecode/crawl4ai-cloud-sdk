@@ -135,6 +135,12 @@ export interface DomainScanUrlInfo {
 
 /**
  * Response from domain scan (/v1/scan).
+ *
+ * For map mode (sync): `urls` is populated inline.
+ * For deep mode (async): `jobId` + `status` are set; poll with
+ * `getScanJob(jobId)` and the `urls` list will be populated progressively.
+ * When `criteria` was supplied in the request, `generatedConfig` carries
+ * the LLM output and `modeUsed` tells you which strategy ran.
  */
 export interface ScanResult {
   success: boolean;
@@ -145,6 +151,171 @@ export interface ScanResult {
   urls: DomainScanUrlInfo[];
   durationMs: number;
   error?: string;
+  // AI-assisted / async fields
+  modeUsed?: 'map' | 'deep';
+  jobId?: string;
+  status?: string;
+  generatedConfig?: GeneratedConfig;
+  message?: string;
+}
+
+/**
+ * True when the scan response is for an async (deep) scan — poll with getScanJob().
+ */
+export function isScanResultAsync(result: ScanResult): boolean {
+  return result.modeUsed === 'deep' && Boolean(result.jobId);
+}
+
+/**
+ * Unified scan configuration for AI-assisted URL discovery.
+ *
+ * Used by scan() and crawlSite(). When `criteria` is set on the parent
+ * request, the AI config generator fills unset fields here. Explicit fields
+ * always win over LLM output.
+ */
+export interface SiteScanConfig {
+  mode?: 'auto' | 'map' | 'deep';
+  patterns?: string[];
+  filters?: Record<string, unknown>;
+  scorers?: Record<string, unknown>;
+  query?: string;
+  scoreThreshold?: number;
+  includeSubdomains?: boolean;
+  maxDepth?: number;
+}
+
+/**
+ * Convert SiteScanConfig (camelCase) to the snake_case payload the API expects.
+ * Only non-undefined fields are included.
+ */
+export function siteScanConfigToDict(cfg: SiteScanConfig): Record<string, unknown> {
+  const d: Record<string, unknown> = {};
+  if (cfg.mode !== undefined) d.mode = cfg.mode;
+  if (cfg.patterns !== undefined) d.patterns = cfg.patterns;
+  if (cfg.filters !== undefined) d.filters = cfg.filters;
+  if (cfg.scorers !== undefined) d.scorers = cfg.scorers;
+  if (cfg.query !== undefined) d.query = cfg.query;
+  if (cfg.scoreThreshold !== undefined) d.score_threshold = cfg.scoreThreshold;
+  if (cfg.includeSubdomains !== undefined) d.include_subdomains = cfg.includeSubdomains;
+  if (cfg.maxDepth !== undefined) d.max_depth = cfg.maxDepth;
+  return d;
+}
+
+/**
+ * Structured extraction configuration for crawlSite().
+ *
+ * When set without a pre-built `schema`, the wrapper fetches `sampleUrl`
+ * (defaults to the crawl's start URL), generates a schema via LLM, and
+ * applies it to every discovered URL.
+ */
+export interface SiteExtractConfig {
+  query?: string;
+  jsonExample?: Record<string, unknown>;
+  method?: 'auto' | 'llm' | 'schema';
+  schema?: Record<string, unknown>;
+  sampleUrl?: string;
+  urlPattern?: string;
+}
+
+/**
+ * Convert SiteExtractConfig (camelCase) to the snake_case payload the API expects.
+ */
+export function siteExtractConfigToDict(cfg: SiteExtractConfig): Record<string, unknown> {
+  const d: Record<string, unknown> = {};
+  if (cfg.method !== undefined) d.method = cfg.method;
+  if (cfg.query !== undefined) d.query = cfg.query;
+  if (cfg.jsonExample !== undefined) d.json_example = cfg.jsonExample;
+  if (cfg.schema !== undefined) d.schema = cfg.schema;
+  if (cfg.sampleUrl !== undefined) d.sample_url = cfg.sampleUrl;
+  if (cfg.urlPattern !== undefined) d.url_pattern = cfg.urlPattern;
+  return d;
+}
+
+/**
+ * LLM-generated config echoed back by /v1/scan and /v1/crawl/site when
+ * `criteria` was set in the request. Contains the scan config and (for
+ * /v1/crawl/site) the extract config, plus LLM reasoning and cache/fallback
+ * flags.
+ */
+export interface GeneratedConfig {
+  scan: Record<string, unknown>;
+  reasoning: string;
+  extract?: Record<string, unknown>;
+  fallback: boolean;
+  cached: boolean;
+}
+
+/**
+ * Create GeneratedConfig from API response dict.
+ */
+export function generatedConfigFromDict(data: Record<string, unknown>): GeneratedConfig {
+  return {
+    scan: (data.scan as Record<string, unknown>) || {},
+    reasoning: (data.reasoning as string) || '',
+    extract: data.extract as Record<string, unknown> | undefined,
+    fallback: Boolean(data.fallback),
+    cached: Boolean(data.cached),
+  };
+}
+
+/**
+ * Polling response for GET /v1/scan/jobs/{job_id} — used with async deep
+ * scans. URLs are appended to `urls` as they're discovered.
+ */
+export interface ScanJobStatus {
+  jobId: string;
+  status: string;
+  modeUsed: string; // "map" | "deep"
+  domain?: string;
+  totalUrls: number;
+  urls: DomainScanUrlInfo[];
+  progress?: { completed?: number; total?: number };
+  generatedConfig?: GeneratedConfig;
+  durationMs: number;
+  error?: string;
+  createdAt?: string;
+  completedAt?: string;
+}
+
+/**
+ * Create ScanJobStatus from API response.
+ */
+export function scanJobStatusFromDict(data: Record<string, unknown>): ScanJobStatus {
+  const urls: DomainScanUrlInfo[] = [];
+  if (data.urls && Array.isArray(data.urls)) {
+    for (const u of data.urls as Record<string, unknown>[]) {
+      urls.push({
+        url: (u.url || '') as string,
+        host: (u.host || '') as string,
+        status: (u.status || 'valid') as string,
+        relevanceScore: u.relevance_score as number | undefined,
+        headData: u.head_data as Record<string, unknown> | undefined,
+      });
+    }
+  }
+  return {
+    jobId: (data.job_id || '') as string,
+    status: (data.status || 'pending') as string,
+    modeUsed: (data.mode_used || 'deep') as string,
+    domain: data.domain as string | undefined,
+    totalUrls: (data.total_urls || 0) as number,
+    urls,
+    progress: data.progress as { completed?: number; total?: number } | undefined,
+    generatedConfig: data.generated_config
+      ? generatedConfigFromDict(data.generated_config as Record<string, unknown>)
+      : undefined,
+    durationMs: (data.duration_ms || 0) as number,
+    error: data.error as string | undefined,
+    createdAt: data.created_at as string | undefined,
+    completedAt: data.completed_at as string | undefined,
+  };
+}
+
+/**
+ * True when a scan job has reached a terminal state.
+ */
+export function isScanJobComplete(job: ScanJobStatus): boolean {
+  return ['completed', 'partial', 'failed', 'cancelled'].includes(job.status);
 }
 
 /**
@@ -160,6 +331,12 @@ export interface ScanOptions {
   scoreThreshold?: number;
   force?: boolean;
   probeThreshold?: number;
+  // AI-assisted fields
+  criteria?: string;
+  scan?: SiteScanConfig | Record<string, unknown>;
+  wait?: boolean;
+  pollInterval?: number;
+  timeout?: number;
 }
 
 /**
@@ -204,6 +381,13 @@ export function scanResultFromDict(data: Record<string, unknown>): ScanResult {
     urls,
     durationMs: (data.duration_ms || 0) as number,
     error: data.error as string | undefined,
+    modeUsed: data.mode_used as 'map' | 'deep' | undefined,
+    jobId: data.job_id as string | undefined,
+    status: data.status as string | undefined,
+    generatedConfig: data.generated_config
+      ? generatedConfigFromDict(data.generated_config as Record<string, unknown>)
+      : undefined,
+    message: data.message as string | undefined,
   };
 }
 
@@ -601,6 +785,17 @@ export interface MapResponse {
   errorMessage?: string;
 }
 
+/**
+ * Response from POST /v1/crawl/site.
+ *
+ * When `criteria` was in the request, `generatedConfig` carries the
+ * LLM-generated scan + extract config. When `extract` was set,
+ * `extractionMethodUsed` tells you whether CSS schema generation or LLM
+ * extraction was picked, and `schemaUsed` holds the generated CSS schema
+ * (if any) so you can reuse it on future crawls.
+ *
+ * Poll progress with `getSiteCrawlJob(jobId)`.
+ */
 export interface SiteCrawlResponse {
   jobId: string;
   status: string;
@@ -608,6 +803,82 @@ export interface SiteCrawlResponse {
   discoveredUrls: number;
   queuedUrls: number;
   createdAt: string;
+  generatedConfig?: GeneratedConfig;
+  extractionMethodUsed?: 'llm' | 'css_schema';
+  schemaUsed?: Record<string, unknown>;
+}
+
+/**
+ * Progress block inside SiteCrawlJobStatus.
+ */
+export interface SiteCrawlProgress {
+  urlsDiscovered: number;
+  urlsCrawled: number;
+  urlsFailed: number;
+  total: number;
+}
+
+/**
+ * Create SiteCrawlProgress from API response dict.
+ */
+export function siteCrawlProgressFromDict(
+  data: Record<string, unknown> | undefined | null,
+): SiteCrawlProgress {
+  const d = data || {};
+  return {
+    urlsDiscovered: (d.urls_discovered || 0) as number,
+    urlsCrawled: (d.urls_crawled || 0) as number,
+    urlsFailed: (d.urls_failed || 0) as number,
+    total: (d.total || 0) as number,
+  };
+}
+
+/**
+ * Polling response for GET /v1/crawl/site/jobs/{job_id}.
+ *
+ * This is the unified scan+crawl polling endpoint. `phase` walks through
+ * three values: "scan" (URL discovery in progress), "crawl" (pages being
+ * fetched + extracted), "done" (everything finished).
+ */
+export interface SiteCrawlJobStatus {
+  jobId: string;
+  status: string;
+  phase: 'scan' | 'crawl' | 'done';
+  progress: SiteCrawlProgress;
+  scanJobId?: string;
+  crawlJobId?: string;
+  downloadUrl?: string;
+  createdAt?: string;
+  completedAt?: string;
+  error?: string;
+}
+
+/**
+ * Create SiteCrawlJobStatus from API response dict.
+ */
+export function siteCrawlJobStatusFromDict(data: Record<string, unknown>): SiteCrawlJobStatus {
+  return {
+    jobId: (data.job_id || '') as string,
+    status: (data.status || 'pending') as string,
+    phase: (data.phase || 'scan') as 'scan' | 'crawl' | 'done',
+    progress: siteCrawlProgressFromDict(data.progress as Record<string, unknown> | undefined),
+    scanJobId: data.scan_job_id as string | undefined,
+    crawlJobId: data.crawl_job_id as string | undefined,
+    downloadUrl: data.download_url as string | undefined,
+    createdAt: data.created_at as string | undefined,
+    completedAt: data.completed_at as string | undefined,
+    error: data.error as string | undefined,
+  };
+}
+
+/**
+ * True when a site crawl job has reached a terminal state.
+ */
+export function isSiteCrawlJobComplete(job: SiteCrawlJobStatus): boolean {
+  return (
+    job.phase === 'done' ||
+    ['completed', 'partial', 'failed', 'cancelled'].includes(job.status)
+  );
 }
 
 export interface WrapperJobProgress {
@@ -713,6 +984,11 @@ export interface SiteCrawlOptions {
   wait?: boolean;
   pollInterval?: number;
   timeout?: number;
+  // AI-assisted fields
+  criteria?: string;
+  scan?: SiteScanConfig | Record<string, unknown>;
+  extract?: SiteExtractConfig | Record<string, unknown>;
+  includeMarkdown?: boolean;
 }
 
 // Wrapper fromDict helpers
@@ -804,6 +1080,11 @@ export function siteCrawlResponseFromDict(data: Record<string, unknown>): SiteCr
     discoveredUrls: (data.discovered_urls || 0) as number,
     queuedUrls: (data.queued_urls || 0) as number,
     createdAt: (data.created_at || '') as string,
+    generatedConfig: data.generated_config
+      ? generatedConfigFromDict(data.generated_config as Record<string, unknown>)
+      : undefined,
+    extractionMethodUsed: data.extraction_method_used as 'llm' | 'css_schema' | undefined,
+    schemaUsed: data.schema_used as Record<string, unknown> | undefined,
   };
 }
 

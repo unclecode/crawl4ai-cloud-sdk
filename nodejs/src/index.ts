@@ -12,7 +12,7 @@
  * ```
  */
 
-export const VERSION = '0.3.0';
+export const VERSION = '0.4.0';
 
 // Main crawler class
 export { AsyncWebCrawler } from './crawler';
@@ -32,6 +32,12 @@ export type {
   MapUrlInfo,
   MapResponse,
   SiteCrawlResponse,
+  SiteCrawlJobStatus,
+  SiteCrawlProgress,
+  SiteScanConfig,
+  SiteExtractConfig,
+  GeneratedConfig,
+  ScanJobStatus,
   WrapperJob,
   WrapperJobProgress,
   MarkdownOptions,
@@ -102,6 +108,16 @@ export {
   siteCrawlResponseFromDict,
   wrapperJobFromDict,
   isWrapperJobComplete,
+  // AI-assisted scan + site crawl helpers
+  generatedConfigFromDict,
+  scanJobStatusFromDict,
+  siteCrawlJobStatusFromDict,
+  siteCrawlProgressFromDict,
+  isScanJobComplete,
+  isScanResultAsync,
+  isSiteCrawlJobComplete,
+  siteScanConfigToDict,
+  siteExtractConfigToDict,
 } from './models';
 
 // Errors

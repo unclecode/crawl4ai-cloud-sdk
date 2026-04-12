@@ -10,6 +10,9 @@ import {
   DeepCrawlResult,
   ScanResult,
   ScanOptions,
+  ScanJobStatus,
+  SiteScanConfig,
+  SiteExtractConfig,
   ContextResult,
   GeneratedSchema,
   StorageUsage,
@@ -19,6 +22,11 @@ import {
   crawlJobFromDict,
   deepCrawlResultFromDict,
   scanResultFromDict,
+  scanJobStatusFromDict,
+  siteScanConfigToDict,
+  siteExtractConfigToDict,
+  isScanResultAsync,
+  isScanJobComplete,
   contextResultFromDict,
   generatedSchemaFromDict,
   storageUsageFromDict,
@@ -29,6 +37,7 @@ import {
   ExtractResponse,
   MapResponse,
   SiteCrawlResponse,
+  SiteCrawlJobStatus,
   WrapperJob,
   MarkdownOptions,
   MarkdownManyOptions,
@@ -43,6 +52,8 @@ import {
   extractResponseFromDict,
   mapResponseFromDict,
   siteCrawlResponseFromDict,
+  siteCrawlJobStatusFromDict,
+  isSiteCrawlJobComplete,
   wrapperJobFromDict,
   isWrapperJobComplete,
 } from './models';
@@ -548,12 +559,32 @@ export class AsyncWebCrawler {
   // -------------------------------------------------------------------------
 
   /**
-   * Discover all URLs under a domain without crawling.
-   * Synchronous — results return inline, no polling needed.
+   * Discover all URLs under a domain. AI-assisted via `criteria`, with
+   * optional async deep-mode traversal.
+   *
+   * Two routing strategies (picked by `scan.mode`):
+   * - **map** (sync): DomainMapper — sitemap + CC + wayback etc. Returns
+   *   URLs inline. 2-60s. Cached 7 days.
+   * - **deep** (async): best-first tree traversal. Returns a `jobId`;
+   *   poll with `getScanJob()` or pass `wait=true`.
    *
    * @example
-   * const result = await crawler.scan('https://example.com', { maxUrls: 50 });
-   * console.log(`Found ${result.totalUrls} URLs across ${result.hostsFound} hosts`);
+   * ```typescript
+   * // AI-assisted (map mode picked by LLM)
+   * const result = await crawler.scan('https://docs.crawl4ai.com', {
+   *   criteria: 'API reference pages',
+   *   maxUrls: 50,
+   * });
+   * console.log(`Mode: ${result.modeUsed}, found ${result.totalUrls} URLs`);
+   *
+   * // Explicit deep scan with waiting
+   * const result = await crawler.scan('https://directory.example.com', {
+   *   criteria: 'company profile pages',
+   *   scan: { mode: 'deep', maxDepth: 3 },
+   *   wait: true,
+   *   pollInterval: 3,
+   * });
+   * ```
    */
   async scan(
     url: string,
@@ -569,6 +600,11 @@ export class AsyncWebCrawler {
       scoreThreshold,
       force = false,
       probeThreshold,
+      criteria,
+      scan,
+      wait = false,
+      pollInterval = 2.0,
+      timeout,
     } = options;
 
     const body: Record<string, unknown> = {
@@ -579,13 +615,104 @@ export class AsyncWebCrawler {
       soft_404_detection: soft404Detection,
       force,
     };
+    if (criteria) body.criteria = criteria;
+    if (scan !== undefined) {
+      // Accept either a typed SiteScanConfig or a raw snake_case dict
+      body.scan = this.isSiteScanConfig(scan) ? siteScanConfigToDict(scan) : scan;
+    }
     if (maxUrls !== undefined) body.max_urls = maxUrls;
     if (query) body.query = query;
     if (scoreThreshold !== undefined) body.score_threshold = scoreThreshold;
     if (probeThreshold !== undefined) body.probe_threshold = probeThreshold;
 
-    const data = await this.http.post('/v1/scan', body);
-    return scanResultFromDict(data);
+    // LLM config generation can take a while on the initial POST.
+    const data = await this.http.post('/v1/scan', body, 180000);
+    const result = scanResultFromDict(data);
+
+    // If the LLM picked deep mode (or caller forced it), optionally block
+    // until the scan job finishes, merging final state back onto the result.
+    if (wait && isScanResultAsync(result) && result.jobId) {
+      const final = await this.waitScanJobV2(result.jobId, pollInterval, timeout);
+      result.status = final.status;
+      result.totalUrls = final.totalUrls;
+      result.urls = final.urls;
+      result.durationMs = final.durationMs;
+      if (final.error) result.error = final.error;
+    }
+
+    return result;
+  }
+
+  /**
+   * Poll a deep scan job started via `scan(url, { scan: { mode: 'deep' } })`.
+   * Returns current discovered URLs, progress, and status.
+   */
+  async getScanJob(jobId: string): Promise<ScanJobStatus> {
+    const data = await this.http.get(`/v1/scan/jobs/${jobId}`);
+    return scanJobStatusFromDict(data);
+  }
+
+  /**
+   * Cancel a running deep scan. Cancellation happens at the next batch
+   * boundary — partial results (URLs discovered so far) are preserved.
+   */
+  async cancelScanJob(jobId: string): Promise<ScanJobStatus> {
+    const data = await this.http.post(`/v1/scan/jobs/${jobId}/cancel`, {});
+    return scanJobStatusFromDict(data);
+  }
+
+  private async waitScanJobV2(
+    jobId: string,
+    pollInterval: number = 2.0,
+    timeout?: number,
+  ): Promise<ScanJobStatus> {
+    const start = Date.now();
+    while (true) {
+      const job = await this.getScanJob(jobId);
+      if (isScanJobComplete(job)) return job;
+      if (timeout && Date.now() - start > timeout * 1000) {
+        throw new TimeoutError(
+          `Timeout waiting for scan job ${jobId}. ` +
+            `Status: ${job.status}, found: ${job.totalUrls}`,
+        );
+      }
+      await this.sleep(pollInterval * 1000);
+    }
+  }
+
+  private isSiteScanConfig(
+    value: SiteScanConfig | Record<string, unknown>,
+  ): value is SiteScanConfig {
+    // Heuristic: camelCase keys unique to SiteScanConfig indicate the typed variant.
+    // Raw dicts use snake_case (score_threshold, include_subdomains, max_depth).
+    if (!value || typeof value !== 'object') return false;
+    return (
+      'scoreThreshold' in value ||
+      'includeSubdomains' in value ||
+      'maxDepth' in value ||
+      // Otherwise fall back to "no snake_case keys present" means typed.
+      !(
+        'score_threshold' in value ||
+        'include_subdomains' in value ||
+        'max_depth' in value
+      )
+    );
+  }
+
+  private isSiteExtractConfig(
+    value: SiteExtractConfig | Record<string, unknown>,
+  ): value is SiteExtractConfig {
+    if (!value || typeof value !== 'object') return false;
+    return (
+      'jsonExample' in value ||
+      'sampleUrl' in value ||
+      'urlPattern' in value ||
+      !(
+        'json_example' in value ||
+        'sample_url' in value ||
+        'url_pattern' in value
+      )
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -825,18 +952,127 @@ export class AsyncWebCrawler {
 
   // ---- Site crawl (always async) ----
 
+  /**
+   * Crawl an entire website — AI-assisted discovery + optional extraction.
+   * Always async.
+   *
+   * The flagship flow: pass a plain-English `criteria` and let the LLM pick
+   * the scan strategy (mode, patterns, query), generate URL filters, and
+   * (optionally) build an extraction schema from a sample URL. Poll one
+   * unified endpoint for both scan and crawl phases via getSiteCrawlJob().
+   *
+   * @example
+   * ```typescript
+   * const job = await crawler.crawlSite('https://books.toscrape.com', {
+   *   criteria: 'all book listing pages',
+   *   maxPages: 50,
+   *   strategy: 'http',
+   *   extract: {
+   *     query: 'book title, price, rating',
+   *     jsonExample: { title: '...', price: '£0.00', rating: 0 },
+   *     method: 'auto',
+   *   },
+   *   wait: true,
+   *   pollInterval: 3,
+   * });
+   * console.log('AI reasoning:', job.generatedConfig?.reasoning);
+   * console.log('Extraction:', job.extractionMethodUsed);
+   * ```
+   */
   async crawlSite(url: string, options: SiteCrawlOptions = {}): Promise<SiteCrawlResponse> {
-    const { maxPages = 20, discovery = 'map', strategy = 'browser', fit = true, include, pattern, maxDepth, crawlerConfig, browserConfig, proxy, webhookUrl, priority = 5 } = options;
-    const body: Record<string, unknown> = { url, max_pages: maxPages, discovery, strategy, fit, priority };
-    if (include) body.include = include;
+    const {
+      maxPages = 20,
+      discovery = 'map',
+      strategy = 'browser',
+      fit = true,
+      include,
+      pattern,
+      maxDepth,
+      crawlerConfig,
+      browserConfig,
+      proxy,
+      webhookUrl,
+      priority = 5,
+      criteria,
+      scan,
+      extract,
+      includeMarkdown,
+      wait = false,
+      pollInterval = 5.0,
+      timeout,
+    } = options;
+
+    const body: Record<string, unknown> = {
+      url,
+      max_pages: maxPages,
+      strategy,
+      fit,
+      priority,
+    };
+
+    // AI-assisted fields
+    if (criteria) body.criteria = criteria;
+    if (scan !== undefined) {
+      body.scan = this.isSiteScanConfig(scan) ? siteScanConfigToDict(scan) : scan;
+    }
+    if (extract !== undefined) {
+      body.extract = this.isSiteExtractConfig(extract) ? siteExtractConfigToDict(extract) : extract;
+    }
+    if (include !== undefined) body.include = include;
+    if (includeMarkdown !== undefined) body.include_markdown = includeMarkdown;
+
+    // Legacy / backward-compat fields
+    if (discovery !== 'map') body.discovery = discovery;
     if (pattern) body.pattern = pattern;
     if (maxDepth !== undefined) body.max_depth = maxDepth;
     if (crawlerConfig) body.crawler_config = crawlerConfig;
     if (browserConfig) body.browser_config = browserConfig;
     if (proxy) body.proxy = proxy;
     if (webhookUrl) body.webhook_url = webhookUrl;
-    const data = await this.http.post('/v1/crawl/site', body, 120000);
-    return siteCrawlResponseFromDict(data);
+
+    // Site crawl can stack LLM calls (scan config + schema gen) so give
+    // the initial POST a generous timeout.
+    const data = await this.http.post('/v1/crawl/site', body, 240000);
+    const result = siteCrawlResponseFromDict(data);
+
+    if (wait && result.jobId) {
+      const final = await this.waitSiteCrawlJob(result.jobId, pollInterval, timeout);
+      result.status = final.status;
+      result.discoveredUrls = final.progress.urlsDiscovered;
+    }
+
+    return result;
+  }
+
+  /**
+   * Poll a site crawl job started via `crawlSite()`.
+   *
+   * This is the unified polling endpoint — it merges the scan phase (URL
+   * discovery) and the crawl phase (per-page fetch + extract) into one
+   * response. `phase` walks through "scan" → "crawl" → "done".
+   */
+  async getSiteCrawlJob(jobId: string): Promise<SiteCrawlJobStatus> {
+    const data = await this.http.get(`/v1/crawl/site/jobs/${jobId}`);
+    return siteCrawlJobStatusFromDict(data);
+  }
+
+  private async waitSiteCrawlJob(
+    jobId: string,
+    pollInterval: number = 5.0,
+    timeout?: number,
+  ): Promise<SiteCrawlJobStatus> {
+    const start = Date.now();
+    while (true) {
+      const job = await this.getSiteCrawlJob(jobId);
+      if (isSiteCrawlJobComplete(job)) return job;
+      if (timeout && Date.now() - start > timeout * 1000) {
+        throw new TimeoutError(
+          `Timeout waiting for site crawl ${jobId}. ` +
+            `Phase: ${job.phase}, crawled: ${job.progress.urlsCrawled}/${job.progress.total}`,
+        );
+      }
+      await this.sleep(pollInterval * 1000);
+    }
   }
 
   // ---- Wrapper job management ----

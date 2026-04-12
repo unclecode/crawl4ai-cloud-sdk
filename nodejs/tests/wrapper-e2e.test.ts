@@ -10,9 +10,17 @@ import {
   ExtractResponse,
   MapResponse,
   SiteCrawlResponse,
+  SiteCrawlJobStatus,
+  ScanResult,
+  ScanJobStatus,
+  SiteScanConfig,
+  SiteExtractConfig,
+  GeneratedConfig,
   WrapperJob,
   AuthenticationError,
   NotFoundError,
+  isScanJobComplete,
+  isSiteCrawlJobComplete,
 } from '../src';
 
 const API_KEY = process.env.CRAWL4AI_API_KEY ||
@@ -152,6 +160,141 @@ describe('Site Crawl', () => {
     expect(result.jobId).toBeDefined();
     expect(result.strategy).toBe('map');
   }, 30000);
+
+  test('with criteria', async () => {
+    // AI-assisted: criteria triggers LLM config generation
+    const result = await crawler.crawlSite('https://books.toscrape.com', {
+      criteria: 'book listing pages',
+      maxPages: 3,
+      strategy: 'http',
+    });
+    expect(result.jobId).toBeDefined();
+    expect(result.generatedConfig).toBeDefined();
+    expect(result.generatedConfig!.scan).toBeDefined();
+    expect(result.generatedConfig!.reasoning).toBeTruthy();
+    expect(result.generatedConfig!.fallback).toBe(false);
+  }, 60000);
+
+  test('with criteria and extract (flagship)', async () => {
+    // The big one: criteria + extract -> schema generated from sample URL
+    const result = await crawler.crawlSite('https://books.toscrape.com', {
+      criteria: 'book listing pages',
+      maxPages: 3,
+      strategy: 'http',
+      extract: {
+        query: 'book title and price',
+        jsonExample: { title: '...', price: '£0.00' },
+        method: 'auto',
+      },
+    });
+    expect(result.jobId).toBeDefined();
+    expect(result.generatedConfig).toBeDefined();
+    expect(['css_schema', 'llm']).toContain(result.extractionMethodUsed);
+    if (result.extractionMethodUsed === 'css_schema') {
+      expect(result.schemaUsed).toBeDefined();
+      expect(result.schemaUsed!.fields).toBeDefined();
+    }
+  }, 120000);
+
+  test('scan config object accepted', async () => {
+    const scanCfg: SiteScanConfig = {
+      mode: 'map',
+      patterns: ['*/catalogue/*'],
+      scoreThreshold: 0.2,
+    };
+    const result = await crawler.crawlSite('https://books.toscrape.com', {
+      maxPages: 3,
+      strategy: 'http',
+      scan: scanCfg,
+    });
+    expect(result.jobId).toBeDefined();
+  }, 30000);
+
+  test('unified polling with getSiteCrawlJob', async () => {
+    const result = await crawler.crawlSite('https://books.toscrape.com', {
+      criteria: 'book listings',
+      maxPages: 3,
+      strategy: 'http',
+    });
+    // Poll up to 5 times to see a phase transition
+    for (let i = 0; i < 5; i++) {
+      const status = await crawler.getSiteCrawlJob(result.jobId);
+      expect(status.jobId).toBe(result.jobId);
+      expect(['scan', 'crawl', 'done']).toContain(status.phase);
+      expect(status.progress).toBeDefined();
+      if (isSiteCrawlJobComplete(status)) break;
+      await new Promise(r => setTimeout(r, 3000));
+    }
+  }, 60000);
+
+  test('include without markdown strips it', async () => {
+    // `include: ['links']` (no 'markdown') should trigger exclude_fields=['markdown']
+    const result = await crawler.crawlSite('https://books.toscrape.com', {
+      criteria: 'book listings',
+      maxPages: 3,
+      strategy: 'http',
+      include: ['links'],
+    });
+    expect(result.jobId).toBeDefined();
+  }, 60000);
+});
+
+// =============================================================================
+// SCAN (AI-assisted)
+// =============================================================================
+
+describe('Scan', () => {
+  test('basic legacy (no criteria)', async () => {
+    const result = await crawler.scan('https://crawl4ai.com', { maxUrls: 10 });
+    expect(result.success).toBe(true);
+    expect(result.totalUrls).toBeGreaterThan(0);
+    expect(result.domain).toBe('crawl4ai.com');
+  }, 30000);
+
+  test('with criteria', async () => {
+    const result = await crawler.scan('https://docs.crawl4ai.com', {
+      criteria: 'API reference and core documentation pages',
+      maxUrls: 20,
+    });
+    expect(result.success).toBe(true);
+    expect(['map', 'deep']).toContain(result.modeUsed);
+    expect(result.generatedConfig).toBeDefined();
+    expect(result.generatedConfig!.reasoning).toBeTruthy();
+  }, 60000);
+
+  test('with scan overrides', async () => {
+    const result = await crawler.scan('https://docs.crawl4ai.com', {
+      criteria: 'documentation pages',
+      scan: { patterns: ['*/core/*'] },
+      maxUrls: 10,
+    });
+    expect(result.success).toBe(true);
+    expect(result.modeUsed).toBe('map');
+  }, 60000);
+
+  test('scan config object as option', async () => {
+    const cfg: SiteScanConfig = { mode: 'map', patterns: ['*/docs/*'] };
+    const result = await crawler.scan('https://docs.crawl4ai.com', {
+      scan: cfg,
+      maxUrls: 10,
+    });
+    expect(result.success).toBe(true);
+  }, 30000);
+
+  test('deep mode returns job and polls', async () => {
+    const result = await crawler.scan('https://httpbin.org', {
+      scan: { mode: 'deep', maxDepth: 1 },
+      maxUrls: 5,
+    });
+    expect(result.jobId).toBeDefined();
+    expect(result.modeUsed).toBe('deep');
+    // Poll once to verify the endpoint responds
+    const job = await crawler.getScanJob(result.jobId!);
+    expect(job.jobId).toBe(result.jobId);
+    // Cancel so we don't tie up worker slots
+    const cancelled = await crawler.cancelScanJob(result.jobId!);
+    expect(cancelled.jobId).toBe(result.jobId);
+  }, 60000);
 });
 
 // =============================================================================

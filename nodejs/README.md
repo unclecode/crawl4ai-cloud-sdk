@@ -41,20 +41,52 @@ const { data } = await c.extract('https://news.ycombinator.com', {
 console.log(data); // [{ title: '...', url: '...' }, ...]
 ```
 
-### Map a Site
+### Map a Site (simple, sync)
 
 ```typescript
 const { urls, totalUrls } = await c.map('https://docs.example.com');
 console.log(`Found ${totalUrls} pages`);
 ```
 
-### Crawl an Entire Site
+### Scan a Site (AI-assisted)
+
+Plain-English criteria → LLM picks scan strategy, URL patterns, filters.
 
 ```typescript
-const job = await c.crawlSite('https://docs.example.com', {
-  maxPages: 50,
+const result = await c.scan('https://docs.crawl4ai.com', {
+  criteria: 'API reference and core documentation pages',
+  maxUrls: 50,
 });
-console.log(`Job ${job.jobId} queued, ${job.discoveredUrls} pages found`);
+console.log(`Mode: ${result.modeUsed}`);  // "map" or "deep"
+console.log(`Found: ${result.totalUrls} URLs`);
+console.log(`AI reasoning: ${result.generatedConfig?.reasoning}`);
+```
+
+### Crawl an Entire Site with Auto-Extraction (flagship)
+
+```typescript
+const job = await c.crawlSite('https://books.toscrape.com', {
+  criteria: 'all book listing pages',
+  maxPages: 50,
+  strategy: 'http',
+  extract: {
+    query: 'book title, price, rating',
+    jsonExample: { title: '...', price: '£0.00', rating: 0 },
+    method: 'auto',  // picks CSS schema vs LLM
+  },
+});
+console.log(`Job ${job.jobId} started`);
+console.log(`Extraction: ${job.extractionMethodUsed}`);
+console.log(`Schema generated: ${!!job.schemaUsed}`);
+
+// Unified polling — one endpoint for scan + crawl phases
+while (true) {
+  const status = await c.getSiteCrawlJob(job.jobId);
+  console.log(`${status.phase}: ${status.progress.urlsCrawled}/${status.progress.total}`);
+  if (['done', 'completed', 'partial', 'failed'].includes(status.phase) ||
+      ['completed', 'partial', 'failed', 'cancelled'].includes(status.status)) break;
+  await new Promise(r => setTimeout(r, 3000));
+}
 ```
 
 ## Wrapper API Reference
@@ -64,8 +96,9 @@ console.log(`Job ${job.jobId} queued, ${job.discoveredUrls} pages found`);
 | `markdown(url)` | `POST /v1/markdown` | `MarkdownResponse` | Clean markdown from any page |
 | `screenshot(url)` | `POST /v1/screenshot` | `ScreenshotResponse` | Full-page screenshot (PNG) or PDF |
 | `extract(url)` | `POST /v1/extract` | `ExtractResponse` | LLM or schema-based structured extraction |
-| `map(url)` | `POST /v1/map` | `MapResponse` | Discover all URLs under a domain |
-| `crawlSite(url)` | `POST /v1/crawl/site` | `SiteCrawlResponse` | Crawl a full site (async job) |
+| `map(url)` | `POST /v1/map` | `MapResponse` | Simple URL discovery (always sync) |
+| `scan(url, {criteria})` | `POST /v1/scan` | `ScanResult` | **AI-assisted** URL discovery with plain-English criteria |
+| `crawlSite(url, {criteria, extract})` | `POST /v1/crawl/site` | `SiteCrawlResponse` | **AI-assisted** whole-site crawl (always async) |
 
 ### Markdown Options
 
@@ -114,11 +147,11 @@ const res = await c.extract('https://example.com/products', {
 });
 ```
 
-### Map Options
+### Map Options (legacy, sync-only)
 
 ```typescript
 const res = await c.map('https://example.com', {
-  mode: 'deep',            // 'default' or 'deep'
+  mode: 'deep',            // 'default' or 'deep' (DomainMapper source depth)
   maxUrls: 500,
   includeSubdomains: true,
   query: 'blog posts',     // relevance scoring
@@ -126,18 +159,67 @@ const res = await c.map('https://example.com', {
 });
 ```
 
-### Site Crawl Options
+### Scan Options (AI-assisted)
 
 ```typescript
-const job = await c.crawlSite('https://docs.example.com', {
-  maxPages: 100,
-  discovery: 'bfs',        // 'map' (default), 'bfs', 'dfs', 'best_first'
-  strategy: 'browser',     // 'browser' (default) or 'http'
-  fit: true,
-  pattern: '/docs/*',      // URL pattern filter
-  maxDepth: 3,
+// AI picks everything from criteria
+const result = await c.scan('https://docs.crawl4ai.com', {
+  criteria: 'API reference pages',
+  maxUrls: 50,
+});
+
+// Explicit overrides on top of LLM output
+const result = await c.scan('https://example.com', {
+  criteria: 'product pages',
+  scan: {
+    mode: 'auto',          // 'auto' | 'map' | 'deep'
+    patterns: ['*/p/*'],
+    includeSubdomains: false,
+  },
+});
+
+// Async deep scan (waits for completion)
+const result = await c.scan('https://directory.example.com', {
+  criteria: 'company profile pages',
+  scan: { mode: 'deep', maxDepth: 3 },
+  wait: true,              // poll until done
+  pollInterval: 3,         // seconds
 });
 ```
+
+### Site Crawl Options (AI-assisted flagship)
+
+```typescript
+const job = await c.crawlSite('https://books.toscrape.com', {
+  // AI-assisted fields (new in v0.4.0)
+  criteria: 'all book listing pages',
+  scan: { mode: 'auto' },                        // optional explicit override
+  extract: {
+    query: 'book title, price, rating',
+    jsonExample: { title: '...', price: '£0.00', rating: 0 },
+    method: 'auto',                              // 'auto' | 'llm' | 'schema'
+  },
+  include: ['markdown', 'links'],                // drop 'markdown' to strip it
+  // Standard fields
+  maxPages: 50,
+  strategy: 'http',                              // 'browser' or 'http'
+  fit: true,
+  // Legacy fields (still supported, prefer the above)
+  discovery: 'bfs',                              // 'map' (default) / 'bfs' / 'dfs' / 'best_first'
+  pattern: '/docs/*',
+  maxDepth: 3,
+  // Waiting
+  wait: true,                                    // poll until done
+  pollInterval: 5,                               // seconds
+  timeout: 300,                                  // seconds
+});
+
+// job.generatedConfig — LLM's scan + extract decisions
+// job.extractionMethodUsed — "css_schema" | "llm"
+// job.schemaUsed — generated CSS schema (reusable!)
+```
+
+**Drop markdown with `include`**: pass `include: ['links', 'media']` (without `'markdown'`) and the worker strips markdown from every result — saves bandwidth for extract-only crawls.
 
 ## Async / Batch Operations
 
@@ -218,6 +300,26 @@ await c.cancelJob(jobId);
 
 // Download results as ZIP
 const url = await c.downloadUrl(jobId);
+```
+
+### Scan Jobs (AI-assisted deep scans)
+
+```typescript
+// Poll status + URLs discovered so far
+const job = await c.getScanJob(jobId);
+console.log(`Status: ${job.status}, found: ${job.totalUrls}`);
+
+// Cancel a running deep scan (preserves partial results)
+await c.cancelScanJob(jobId);
+```
+
+### Site Crawl Jobs (unified scan + crawl polling)
+
+```typescript
+const status = await c.getSiteCrawlJob(jobId);
+console.log(`${status.phase}: ${status.progress.urlsCrawled}/${status.progress.total}`);
+// status.phase walks: "scan" -> "crawl" -> "done"
+// status.downloadUrl is set when phase === "done" and status === "completed"
 ```
 
 ## Power User: Config Passthrough

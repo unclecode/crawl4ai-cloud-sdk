@@ -60,10 +60,92 @@ asyncio.run(main())
 | `markdown(url)` | Returns clean markdown (with optional fit/pruning) | `POST /v1/markdown` |
 | `screenshot(url)` | Returns base64 screenshot (PNG) and optional PDF | `POST /v1/screenshot` |
 | `extract(url, query=...)` | Extracts structured data (auto/LLM/CSS schema) | `POST /v1/extract` |
-| `map(url)` | Discovers all URLs on a domain via sitemap + probing | `POST /v1/map` |
-| `crawl_site(url)` | Full site crawl with discovery + extraction (async) | `POST /v1/crawl/site` |
+| `map(url)` | Simple URL discovery on a domain (always sync) | `POST /v1/map` |
+| `scan(url, criteria=...)` | **AI-assisted** URL discovery with plain-English criteria + map/deep routing | `POST /v1/scan` |
+| `crawl_site(url, criteria=..., extract=...)` | **AI-assisted** full site crawl — LLM generates scan config + extraction schema | `POST /v1/crawl/site` |
 
-Each method returns a typed response object (`MarkdownResponse`, `ScreenshotResponse`, `ExtractResponse`, `MapResponse`, `SiteCrawlResponse`) with `.success`, `.duration_ms`, and `.usage` fields.
+Each method returns a typed response object (`MarkdownResponse`, `ScreenshotResponse`, `ExtractResponse`, `MapResponse`, `ScanResult`, `SiteCrawlResponse`) with `.success`, `.duration_ms`, and `.usage` fields.
+
+### AI-assisted flows (v0.4.0)
+
+Pass a plain-English `criteria` and let the backend LLM pick scan mode, URL patterns, filters, and scorers. Pair with `extract` on `crawl_site()` to also auto-generate a CSS extraction schema from a sample URL. The generated config is echoed back so you can see and reuse it.
+
+```python
+async with AsyncWebCrawler(api_key="sk_live_...") as crawler:
+
+    # AI-assisted scan — LLM picks map vs deep + generates patterns/query/threshold
+    result = await crawler.scan(
+        "https://docs.crawl4ai.com",
+        criteria="API reference and core docs pages",
+        max_urls=50,
+    )
+    print(f"Mode: {result.mode_used}")                  # "map" or "deep"
+    print(f"Found: {result.total_urls} URLs")
+    if result.generated_config:
+        print(f"AI: {result.generated_config.reasoning}")
+
+    # Explicit deep scan with async polling
+    job = await crawler.scan(
+        "https://directory.example.com",
+        criteria="company profile pages",
+        scan={"mode": "deep", "max_depth": 3},
+        wait=True,                                       # block until done
+        poll_interval=3.0,
+    )
+
+    # Flagship: crawl whole site + auto-extract structured data
+    job = await crawler.crawl_site(
+        "https://books.toscrape.com",
+        criteria="all book listing pages",
+        max_pages=50,
+        strategy="http",
+        extract={
+            "query": "book title, price, rating",
+            "json_example": {"title": "...", "price": "£0.00", "rating": 0},
+            "method": "auto",                            # picks CSS schema vs LLM
+        },
+        include=["links"],                               # drop markdown — extract-only
+    )
+    print(f"Generated schema: {bool(job.schema_used)}")
+    print(f"Method: {job.extraction_method_used}")      # "css_schema" or "llm"
+
+    # Unified polling — one endpoint for scan + crawl phases
+    while True:
+        status = await crawler.get_site_crawl_job(job.job_id)
+        print(f"{status.phase}: {status.progress.urls_crawled}/{status.progress.total}")
+        if status.is_complete:
+            print(f"Download: {status.download_url}")
+            break
+        await asyncio.sleep(3)
+```
+
+**Config objects** (optional — both `scan` and `extract` accept plain dicts or typed dataclasses):
+
+```python
+from crawl4ai_cloud import SiteScanConfig, SiteExtractConfig
+
+scan_cfg = SiteScanConfig(
+    mode="auto",                                         # "auto" | "map" | "deep"
+    patterns=["*/docs/*", "*/guide/*"],
+    scorers={"keywords": ["auth", "oauth"], "optimal_depth": 2},
+    max_depth=3,
+)
+
+extract_cfg = SiteExtractConfig(
+    query="book title, price, rating",
+    json_example={"title": "...", "price": "£0.00", "rating": 0},
+    method="auto",
+)
+
+job = await crawler.crawl_site(
+    "https://books.toscrape.com",
+    criteria="book listings",
+    scan=scan_cfg,
+    extract=extract_cfg,
+)
+```
+
+**Drop markdown with `include`**: if you pass `include=["links", "media"]` without `"markdown"`, the worker force-strips markdown from every result — saves bandwidth for extract-only crawls.
 
 ## Async / Batch
 
@@ -89,11 +171,11 @@ async with AsyncWebCrawler(api_key="sk_live_...") as crawler:
         urls, method="llm", query="get product name and price", wait=True,
     )
 
-    # Site crawl is always async
+    # Site crawl is always async — prefer criteria + extract over legacy discovery flag
     site = await crawler.crawl_site(
         "https://docs.example.com",
+        criteria="all API reference pages",
         max_pages=100,
-        discovery="bfs",
         wait=True,
     )
 ```
@@ -117,6 +199,15 @@ await crawler.cancel_screenshot_job(job_id)
 job   = await crawler.get_extract_job(job_id)
 jobs  = await crawler.list_extract_jobs()
 await crawler.cancel_extract_job(job_id)
+
+# Scan jobs (AI-assisted deep scans)
+job   = await crawler.get_scan_job(job_id)              # unified status + URLs-so-far
+await crawler.cancel_scan_job(job_id)                   # preserves partial results
+
+# Site crawl jobs (unified scan + crawl polling)
+job   = await crawler.get_site_crawl_job(job_id)        # phase: scan|crawl|done
+# Cancel delegates to the underlying deep crawl job:
+await crawler.cancel_deep_crawl(job_id)
 
 # Core crawl jobs (from run_many / deep_crawl)
 job   = await crawler.get_job(job_id)

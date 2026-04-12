@@ -23,6 +23,12 @@ from crawl4ai_cloud import (
     ExtractResponse,
     MapResponse,
     SiteCrawlResponse,
+    SiteCrawlJobStatus,
+    ScanResult,
+    ScanJobStatus,
+    SiteScanConfig,
+    SiteExtractConfig,
+    GeneratedConfig,
     WrapperJob,
     WrapperUsage,
 )
@@ -236,6 +242,166 @@ class TestSiteCrawl:
             max_depth=1, strategy="http",
         )
         assert result.job_id
+
+    @pytest.mark.asyncio
+    async def test_with_criteria(self, crawler):
+        """AI-assisted: criteria triggers LLM config generation."""
+        result = await crawler.crawl_site(
+            "https://books.toscrape.com",
+            criteria="book listing pages",
+            max_pages=3,
+            strategy="http",
+        )
+        assert result.job_id
+        assert result.generated_config is not None
+        assert isinstance(result.generated_config, GeneratedConfig)
+        assert result.generated_config.scan  # has a scan config
+        assert result.generated_config.reasoning  # non-empty reasoning
+        # fallback should be False on stage unless LLM is unreachable
+        assert result.generated_config.fallback is False
+
+    @pytest.mark.asyncio
+    async def test_with_criteria_and_extract(self, crawler):
+        """Flagship flow: criteria + extract → schema generated + echoed back."""
+        result = await crawler.crawl_site(
+            "https://books.toscrape.com",
+            criteria="book listing pages",
+            max_pages=3,
+            strategy="http",
+            extract={
+                "query": "book title and price",
+                "json_example": {"title": "...", "price": "£0.00"},
+                "method": "auto",
+            },
+        )
+        assert result.job_id
+        assert result.generated_config is not None
+        assert result.extraction_method_used in ("css_schema", "llm")
+        # When CSS path is picked, schema_used should be populated
+        if result.extraction_method_used == "css_schema":
+            assert result.schema_used is not None
+            assert "fields" in result.schema_used
+
+    @pytest.mark.asyncio
+    async def test_scan_config_dataclass(self, crawler):
+        """SiteScanConfig dataclass accepted alongside plain dict."""
+        scan_cfg = SiteScanConfig(
+            mode="map",
+            patterns=["*/catalogue/*"],
+            score_threshold=0.2,
+        )
+        result = await crawler.crawl_site(
+            "https://books.toscrape.com",
+            max_pages=3,
+            strategy="http",
+            scan=scan_cfg,
+        )
+        assert result.job_id
+
+    @pytest.mark.asyncio
+    async def test_unified_polling(self, crawler):
+        """get_site_crawl_job returns unified scan+crawl status with phase."""
+        result = await crawler.crawl_site(
+            "https://books.toscrape.com",
+            criteria="book listings",
+            max_pages=3,
+            strategy="http",
+        )
+        # Poll a few times to verify the shape
+        for _ in range(5):
+            status = await crawler.get_site_crawl_job(result.job_id)
+            assert isinstance(status, SiteCrawlJobStatus)
+            assert status.job_id == result.job_id
+            assert status.phase in ("scan", "crawl", "done")
+            assert status.progress is not None
+            if status.is_complete:
+                break
+            await asyncio.sleep(3)
+
+    @pytest.mark.asyncio
+    async def test_include_without_markdown(self, crawler):
+        """include=['links'] should trigger markdown stripping at trim time."""
+        result = await crawler.crawl_site(
+            "https://books.toscrape.com",
+            criteria="book listings",
+            max_pages=3,
+            strategy="http",
+            include=["links"],
+        )
+        assert result.job_id
+
+
+# =============================================================================
+# SCAN (AI-assisted)
+# =============================================================================
+
+
+class TestScan:
+    @pytest.mark.asyncio
+    async def test_basic(self, crawler):
+        """Legacy: no criteria → plain DomainMapper sync flow."""
+        result = await crawler.scan("https://crawl4ai.com", max_urls=10)
+        assert isinstance(result, ScanResult)
+        assert result.success is True
+        assert result.total_urls > 0
+        assert result.domain == "crawl4ai.com"
+
+    @pytest.mark.asyncio
+    async def test_with_criteria(self, crawler):
+        """AI-assisted: criteria triggers LLM config generator."""
+        result = await crawler.scan(
+            "https://docs.crawl4ai.com",
+            criteria="API reference and core documentation pages",
+            max_urls=20,
+        )
+        assert result.success is True
+        assert result.mode_used in ("map", "deep")
+        assert result.generated_config is not None
+        assert isinstance(result.generated_config, GeneratedConfig)
+        assert result.generated_config.reasoning
+
+    @pytest.mark.asyncio
+    async def test_with_scan_overrides(self, crawler):
+        """Explicit scan overrides merged on top of LLM output."""
+        result = await crawler.scan(
+            "https://docs.crawl4ai.com",
+            criteria="documentation pages",
+            scan={"patterns": ["*/core/*"]},
+            max_urls=10,
+        )
+        assert result.success is True
+        assert result.mode_used == "map"
+
+    @pytest.mark.asyncio
+    async def test_scan_config_dataclass(self, crawler):
+        """SiteScanConfig dataclass accepted as `scan` parameter."""
+        cfg = SiteScanConfig(mode="map", patterns=["*/docs/*"])
+        result = await crawler.scan(
+            "https://docs.crawl4ai.com",
+            scan=cfg,
+            max_urls=10,
+        )
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_deep_mode_async(self, crawler):
+        """Deep mode returns job_id + is_async=True."""
+        result = await crawler.scan(
+            "https://httpbin.org",
+            scan={"mode": "deep", "max_depth": 1},
+            max_urls=5,
+        )
+        # Deep mode should kick off an async job
+        assert result.is_async is True
+        assert result.job_id is not None
+        assert result.mode_used == "deep"
+        # And we should be able to poll it
+        job = await crawler.get_scan_job(result.job_id)
+        assert isinstance(job, ScanJobStatus)
+        assert job.job_id == result.job_id
+        # Cancel it so we don't tie up worker slots
+        cancelled = await crawler.cancel_scan_job(result.job_id)
+        assert cancelled.job_id == result.job_id
 
 
 # =============================================================================

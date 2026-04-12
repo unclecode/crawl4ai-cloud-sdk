@@ -196,8 +196,113 @@ class DomainScanUrlInfo:
 
 
 @dataclass
+class SiteScanConfig:
+    """
+    Unified scan configuration for AI-assisted URL discovery.
+
+    Used by /v1/scan and /v1/crawl/site. When `criteria` is set on the parent
+    request, the AI config generator fills unset fields here. Explicit fields
+    always win over LLM output.
+
+    Fields match the SiteScanConfig Pydantic model in the backend.
+    """
+    mode: str = "auto"  # "auto" | "map" | "deep"
+    patterns: Optional[List[str]] = None
+    filters: Optional[Dict[str, Any]] = None
+    scorers: Optional[Dict[str, Any]] = None
+    query: Optional[str] = None
+    score_threshold: Optional[float] = None
+    include_subdomains: bool = False
+    max_depth: Optional[int] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {"mode": self.mode}
+        if self.patterns is not None:
+            d["patterns"] = self.patterns
+        if self.filters is not None:
+            d["filters"] = self.filters
+        if self.scorers is not None:
+            d["scorers"] = self.scorers
+        if self.query is not None:
+            d["query"] = self.query
+        if self.score_threshold is not None:
+            d["score_threshold"] = self.score_threshold
+        if self.include_subdomains:
+            d["include_subdomains"] = True
+        if self.max_depth is not None:
+            d["max_depth"] = self.max_depth
+        return d
+
+
+@dataclass
+class SiteExtractConfig:
+    """
+    Structured extraction configuration for /v1/crawl/site.
+
+    Mirrors /v1/extract's shape. When set without a pre-built `schema`, the
+    wrapper fetches `sample_url` (defaults to the crawl's start URL), generates
+    a schema via LLM, and injects it into crawler_config.extraction_strategy
+    for all discovered URLs.
+    """
+    query: Optional[str] = None
+    json_example: Optional[Dict[str, Any]] = None
+    method: str = "auto"  # "auto" | "llm" | "schema"
+    schema: Optional[Dict[str, Any]] = None
+    sample_url: Optional[str] = None
+    url_pattern: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {"method": self.method}
+        if self.query is not None:
+            d["query"] = self.query
+        if self.json_example is not None:
+            d["json_example"] = self.json_example
+        if self.schema is not None:
+            d["schema"] = self.schema
+        if self.sample_url is not None:
+            d["sample_url"] = self.sample_url
+        if self.url_pattern is not None:
+            d["url_pattern"] = self.url_pattern
+        return d
+
+
+@dataclass
+class GeneratedConfig:
+    """
+    LLM-generated config echoed back by /v1/scan and /v1/crawl/site when
+    `criteria` was set in the request. Contains the scan config and (for
+    /v1/crawl/site) the extract config, plus LLM reasoning and cache/fallback
+    flags.
+    """
+    scan: Dict[str, Any]
+    reasoning: str = ""
+    extract: Optional[Dict[str, Any]] = None
+    fallback: bool = False
+    cached: bool = False
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "GeneratedConfig":
+        return cls(
+            scan=data.get("scan") or {},
+            reasoning=data.get("reasoning", ""),
+            extract=data.get("extract"),
+            fallback=bool(data.get("fallback", False)),
+            cached=bool(data.get("cached", False)),
+        )
+
+
+@dataclass
 class ScanResult:
-    """Response from domain scan (/v1/scan)."""
+    """
+    Response from /v1/scan.
+
+    For map mode (sync): `urls` is populated inline.
+    For deep mode (async): `job_id` + `status` are set; poll with
+    `get_scan_job(job_id)` and the `urls` list will be populated progressively.
+
+    When `criteria` was supplied in the request, `generated_config` carries
+    the LLM output and `mode_used` tells you which strategy ran.
+    """
     success: bool
     domain: str
     total_urls: int
@@ -206,10 +311,24 @@ class ScanResult:
     urls: List[DomainScanUrlInfo]
     duration_ms: int
     error: Optional[str] = None
+    # AI-assisted / async fields
+    mode_used: Optional[str] = None  # "map" | "deep"
+    job_id: Optional[str] = None     # set when async deep mode kicked off
+    status: Optional[str] = None     # "pending" | "running" | "completed" | "failed"
+    generated_config: Optional[GeneratedConfig] = None
+    message: Optional[str] = None
+
+    @property
+    def is_async(self) -> bool:
+        """True when the response is for an async (deep) scan — poll with get_scan_job()."""
+        return self.mode_used == "deep" and bool(self.job_id)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ScanResult":
         urls = [DomainScanUrlInfo.from_dict(u) for u in data.get("urls", [])]
+        generated_config = None
+        if data.get("generated_config"):
+            generated_config = GeneratedConfig.from_dict(data["generated_config"])
         return cls(
             success=data.get("success", False),
             domain=data.get("domain", ""),
@@ -219,6 +338,61 @@ class ScanResult:
             urls=urls,
             duration_ms=data.get("duration_ms", 0),
             error=data.get("error"),
+            mode_used=data.get("mode_used"),
+            job_id=data.get("job_id"),
+            status=data.get("status"),
+            generated_config=generated_config,
+            message=data.get("message"),
+        )
+
+
+@dataclass
+class ScanJobStatus:
+    """
+    Polling response for GET /v1/scan/jobs/{job_id} — used with async deep
+    scans. URLs are appended to `urls` as they're discovered. `progress`
+    carries `{completed, total}` once the backend starts tracking.
+    """
+    job_id: str
+    status: str
+    mode_used: str = "deep"
+    domain: Optional[str] = None
+    total_urls: int = 0
+    urls: List[DomainScanUrlInfo] = field(default_factory=list)
+    progress: Optional[Dict[str, int]] = None
+    generated_config: Optional[GeneratedConfig] = None
+    duration_ms: int = 0
+    error: Optional[str] = None
+    created_at: Optional[str] = None
+    completed_at: Optional[str] = None
+
+    @property
+    def is_complete(self) -> bool:
+        return self.status in ("completed", "partial", "failed", "cancelled")
+
+    @property
+    def is_successful(self) -> bool:
+        return self.status in ("completed", "partial")
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ScanJobStatus":
+        urls = [DomainScanUrlInfo.from_dict(u) for u in data.get("urls") or []]
+        generated_config = None
+        if data.get("generated_config"):
+            generated_config = GeneratedConfig.from_dict(data["generated_config"])
+        return cls(
+            job_id=data.get("job_id", ""),
+            status=data.get("status", "pending"),
+            mode_used=data.get("mode_used", "deep"),
+            domain=data.get("domain"),
+            total_urls=data.get("total_urls", 0),
+            urls=urls,
+            progress=data.get("progress"),
+            generated_config=generated_config,
+            duration_ms=data.get("duration_ms", 0),
+            error=data.get("error"),
+            created_at=data.get("created_at"),
+            completed_at=data.get("completed_at"),
         )
 
 
@@ -742,16 +916,32 @@ class MapResponse:
 
 @dataclass
 class SiteCrawlResponse:
-    """Response from POST /v1/crawl/site."""
+    """
+    Response from POST /v1/crawl/site.
+
+    When `criteria` was in the request, `generated_config` carries the
+    LLM-generated scan + extract config. When `extract` was set,
+    `extraction_method_used` tells you whether CSS schema generation or LLM
+    extraction was picked, and `schema_used` holds the generated CSS schema
+    (if any) so you can reuse it on future crawls.
+
+    Poll progress with `get_site_crawl_job(job_id)`.
+    """
     job_id: str
     status: str = "pending"
     strategy: str = "map"
     discovered_urls: int = 0
     queued_urls: int = 0
     created_at: str = ""
+    generated_config: Optional[GeneratedConfig] = None
+    extraction_method_used: Optional[str] = None  # "llm" | "css_schema"
+    schema_used: Optional[Dict[str, Any]] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SiteCrawlResponse":
+        generated_config = None
+        if data.get("generated_config"):
+            generated_config = GeneratedConfig.from_dict(data["generated_config"])
         return cls(
             job_id=data.get("job_id", ""),
             status=data.get("status", "pending"),
@@ -759,6 +949,77 @@ class SiteCrawlResponse:
             discovered_urls=data.get("discovered_urls", 0),
             queued_urls=data.get("queued_urls", 0),
             created_at=data.get("created_at", ""),
+            generated_config=generated_config,
+            extraction_method_used=data.get("extraction_method_used"),
+            schema_used=data.get("schema_used"),
+        )
+
+
+@dataclass
+class SiteCrawlProgress:
+    """Progress block inside SiteCrawlJobStatus."""
+    urls_discovered: int = 0
+    urls_crawled: int = 0
+    urls_failed: int = 0
+    total: int = 0
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SiteCrawlProgress":
+        return cls(
+            urls_discovered=data.get("urls_discovered", 0),
+            urls_crawled=data.get("urls_crawled", 0),
+            urls_failed=data.get("urls_failed", 0),
+            total=data.get("total", 0),
+        )
+
+
+@dataclass
+class SiteCrawlJobStatus:
+    """
+    Polling response for GET /v1/crawl/site/jobs/{job_id}.
+
+    This is the unified scan+crawl polling endpoint. `phase` walks through
+    three values: "scan" (URL discovery in progress), "crawl" (pages being
+    fetched + extracted), "done" (everything finished).
+
+    When phase is "done" and status is "completed", `download_url` is a fresh
+    S3 presigned URL (1-hour expiry) for the result ZIP.
+    """
+    job_id: str
+    status: str = "pending"
+    phase: str = "scan"  # "scan" | "crawl" | "done"
+    progress: SiteCrawlProgress = field(default_factory=SiteCrawlProgress)
+    scan_job_id: Optional[str] = None
+    crawl_job_id: Optional[str] = None
+    download_url: Optional[str] = None
+    created_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    error: Optional[str] = None
+
+    @property
+    def is_complete(self) -> bool:
+        return self.phase == "done" or self.status in (
+            "completed", "partial", "failed", "cancelled"
+        )
+
+    @property
+    def is_successful(self) -> bool:
+        return self.status in ("completed", "partial")
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SiteCrawlJobStatus":
+        progress = SiteCrawlProgress.from_dict(data.get("progress") or {})
+        return cls(
+            job_id=data.get("job_id", ""),
+            status=data.get("status", "pending"),
+            phase=data.get("phase", "scan"),
+            progress=progress,
+            scan_job_id=data.get("scan_job_id"),
+            crawl_job_id=data.get("crawl_job_id"),
+            download_url=data.get("download_url"),
+            created_at=data.get("created_at"),
+            completed_at=data.get("completed_at"),
+            error=data.get("error"),
         )
 
 

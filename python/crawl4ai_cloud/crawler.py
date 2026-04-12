@@ -717,6 +717,8 @@ class AsyncWebCrawler:
     async def scan(
         self,
         url: str,
+        criteria: Optional[str] = None,
+        scan: Optional[Union[Dict[str, Any], "SiteScanConfig"]] = None,
         mode: str = "default",
         max_urls: Optional[int] = None,
         include_subdomains: bool = True,
@@ -726,40 +728,90 @@ class AsyncWebCrawler:
         score_threshold: Optional[float] = None,
         force: bool = False,
         probe_threshold: int = 10,
+        wait: bool = False,
+        poll_interval: float = 2.0,
+        timeout: Optional[float] = None,
     ) -> "ScanResult":
         """
-        Discover all URLs under a domain without crawling.
+        Discover all URLs under a domain. AI-assisted via `criteria`, with
+        optional async deep-mode traversal.
 
-        Synchronous — results return inline, no job polling needed.
-        Results cached 7 days — repeat scans return in ~200ms.
-        Costs 1 credit per scan.
+        Two routing strategies (picked by `scan.mode`):
+        - **map** (sync): DomainMapper — sitemap + CC + wayback etc. Returns
+          URLs inline. 2-60s. Cached 7 days.
+        - **deep** (async): best-first tree traversal. Returns a `job_id`;
+          poll with `get_scan_job()` or pass `wait=True`.
+
+        Costs 1 credit per scan, flat.
 
         Args:
-            url: Domain to scan (e.g., "https://example.com")
-            mode: "default" (fast, adaptive) or "deep" (comprehensive, ~30-60s)
+            url: Starting URL (e.g., "https://example.com")
+            criteria: Plain-English description of what to discover. When set,
+                the backend LLM generates a unified scan config (mode,
+                patterns, filters, scorers, query, threshold). Explicit
+                overrides in `scan=` still win.
+            scan: Explicit scan overrides — dict or `SiteScanConfig`. Merged
+                on top of LLM output. Fields: `mode` ("auto"|"map"|"deep"),
+                `patterns`, `filters`, `scorers`, `query`, `score_threshold`,
+                `include_subdomains`, `max_depth`.
+            mode: DomainMapper source depth: "default" (fast, adaptive) or
+                "deep" (all historical sources). Only applies when the final
+                routing is map mode. **This is distinct from `scan.mode`.**
             max_urls: Maximum URLs to return. Plan limit applied server-side.
             include_subdomains: Discover subdomains. Default: True.
             extract_head: Fetch <head> metadata per URL. Default: True.
             soft_404_detection: Filter SPA false positives. Default: True.
-            query: Relevance query for scoring URLs.
+            query: Top-level BM25 relevance query.
             score_threshold: Minimum relevance score (0.0-1.0).
             force: Bypass 7-day cache and force fresh scan.
-            probe_threshold: In default mode, auto-probe if fewer URLs found. 0 to disable.
+            probe_threshold: In default source mode, auto-probe if fewer
+                URLs found. 0 to disable.
+            wait: If True and deep mode is picked, poll until completion.
+            poll_interval: Seconds between polls when waiting. Default: 2.0.
+            timeout: Max seconds to wait. Raises TimeoutError if exceeded.
 
         Returns:
-            ScanResult with discovered URLs, hosts, and metadata.
+            ScanResult with discovered URLs + `mode_used` + `generated_config`
+            (when criteria was set). When deep mode kicks off, `is_async`
+            will be True and `job_id` will be set; the URLs list is empty
+            until you poll.
 
         Example:
             ```python
-            result = await crawler.scan("https://example.com", max_urls=50)
-            print(f"Found {result.total_urls} URLs across {result.hosts_found} hosts")
-            for url_info in result.urls[:5]:
-                print(f"  {url_info.url}")
+            # AI-assisted (map mode picked by LLM)
+            result = await crawler.scan(
+                "https://docs.crawl4ai.com",
+                criteria="API reference pages",
+                max_urls=50,
+            )
+            print(f"Mode: {result.mode_used}, found {result.total_urls} URLs")
+            if result.generated_config:
+                print(f"AI reasoning: {result.generated_config.reasoning}")
+
+            # Explicit deep scan with waiting
+            result = await crawler.scan(
+                "https://directory.example.com",
+                criteria="company profile pages",
+                scan={"mode": "deep", "max_depth": 3},
+                wait=True,
+                poll_interval=3.0,
+            )
             ```
         """
-        from crawl4ai_cloud.models import ScanResult
+        from crawl4ai_cloud.models import ScanResult, SiteScanConfig
 
         body: Dict[str, Any] = {"url": url, "mode": mode}
+        if criteria:
+            body["criteria"] = criteria
+        if scan is not None:
+            if isinstance(scan, SiteScanConfig):
+                body["scan"] = scan.to_dict()
+            elif isinstance(scan, dict):
+                body["scan"] = scan
+            else:
+                raise TypeError(
+                    f"scan must be dict or SiteScanConfig, got {type(scan).__name__}"
+                )
         if max_urls is not None:
             body["max_urls"] = max_urls
         body["include_subdomains"] = include_subdomains
@@ -773,8 +825,90 @@ class AsyncWebCrawler:
         if probe_threshold != 10:
             body["probe_threshold"] = probe_threshold
 
-        data = await self._http.request("POST", "/v1/scan", json=body)
-        return ScanResult.from_dict(data)
+        data = await self._http.request("POST", "/v1/scan", json=body, timeout=180)
+        result = ScanResult.from_dict(data)
+
+        # If the LLM picked deep mode (or the caller forced it), optionally
+        # block until the scan job finishes.
+        if wait and result.is_async:
+            final = await self._wait_scan_job_v2(
+                result.job_id, poll_interval, timeout,
+            )
+            # Transfer polled state back onto the ScanResult so callers get
+            # one object they can inspect.
+            result.status = final.status
+            result.total_urls = final.total_urls
+            result.urls = final.urls
+            result.duration_ms = final.duration_ms
+            if final.error:
+                result.error = final.error
+
+        return result
+
+    async def get_scan_job(self, job_id: str) -> "ScanJobStatus":
+        """
+        Poll a deep scan job started via `scan(..., scan={"mode": "deep"})`.
+
+        Returns:
+            ScanJobStatus with current discovered URLs, progress, and status.
+            URLs are appended as they're discovered.
+
+        Example:
+            ```python
+            scan_result = await crawler.scan(
+                "https://directory.example.com",
+                criteria="company profile pages",
+                scan={"mode": "deep"},
+            )
+
+            while True:
+                job = await crawler.get_scan_job(scan_result.job_id)
+                print(f"Status: {job.status}, found {job.total_urls}")
+                if job.is_complete:
+                    break
+                await asyncio.sleep(3)
+            ```
+        """
+        from crawl4ai_cloud.models import ScanJobStatus
+        data = await self._http.request("GET", f"/v1/scan/jobs/{job_id}")
+        return ScanJobStatus.from_dict(data)
+
+    async def cancel_scan_job(self, job_id: str) -> "ScanJobStatus":
+        """
+        Cancel a running deep scan. Cancellation happens at the next batch
+        boundary — partial results (URLs discovered so far) are preserved.
+
+        Args:
+            job_id: Scan job id returned from a deep-mode `scan()` call.
+
+        Returns:
+            ScanJobStatus with status="cancelled" and any partial results.
+        """
+        from crawl4ai_cloud.models import ScanJobStatus
+        data = await self._http.request(
+            "POST", f"/v1/scan/jobs/{job_id}/cancel"
+        )
+        return ScanJobStatus.from_dict(data)
+
+    async def _wait_scan_job_v2(
+        self,
+        job_id: str,
+        poll_interval: float = 2.0,
+        timeout: Optional[float] = None,
+    ) -> "ScanJobStatus":
+        """Poll /v1/scan/jobs/{id} until the deep scan finishes."""
+        from crawl4ai_cloud.models import ScanJobStatus
+        start = time.time()
+        while True:
+            job = await self.get_scan_job(job_id)
+            if job.is_complete:
+                return job
+            if timeout and (time.time() - start) > timeout:
+                raise TimeoutError(
+                    f"Timeout waiting for scan job {job_id}. "
+                    f"Status: {job.status}, found: {job.total_urls}"
+                )
+            await asyncio.sleep(poll_interval)
 
     # -------------------------------------------------------------------------
     # Context API
@@ -1249,10 +1383,14 @@ class AsyncWebCrawler:
         self,
         url: str,
         max_pages: int = 20,
-        discovery: str = "map",
+        criteria: Optional[str] = None,
+        scan: Optional[Union[Dict[str, Any], "SiteScanConfig"]] = None,
+        extract: Optional[Union[Dict[str, Any], "SiteExtractConfig"]] = None,
+        include: Optional[List[str]] = None,
+        include_markdown: Optional[bool] = None,
         strategy: str = "browser",
         fit: bool = True,
-        include: Optional[List[str]] = None,
+        discovery: str = "map",
         pattern: Optional[str] = None,
         max_depth: Optional[int] = None,
         crawler_config: Optional[Dict[str, Any]] = None,
@@ -1265,30 +1403,114 @@ class AsyncWebCrawler:
         timeout: Optional[float] = None,
     ) -> SiteCrawlResponse:
         """
-        Crawl an entire website. Always async -- returns job_id.
+        Crawl an entire website — AI-assisted discovery + optional extraction.
+        Always async.
+
+        The flagship flow: pass a plain-English `criteria` and let the LLM
+        pick the scan strategy (mode, patterns, query), generate URL filters,
+        and (optionally) build an extraction schema from a sample URL. Poll
+        one unified endpoint for both scan and crawl phases.
 
         Args:
-            url: Starting URL
-            max_pages: Maximum pages to crawl (default 20)
-            discovery: URL discovery strategy: "map", "bfs", "dfs", "best_first"
-            strategy: Crawl strategy per page: "browser" or "http"
-            fit: Apply content pruning (default True)
-            include: Extra data: "links", "media", "metadata", "tables"
-            pattern: URL glob pattern filter (e.g. "*/blog/*")
-            max_depth: Max traversal depth (for bfs/dfs/best_first)
-            wait: If True, poll until complete
-            poll_interval: Seconds between polls (default 5)
-            timeout: Max seconds to wait
+            url: Starting URL.
+            max_pages: Maximum pages to crawl (1-1000). Default: 20.
+            criteria: Plain-English description — triggers the LLM config
+                generator. Example: "all book listing pages".
+            scan: Explicit scan overrides (dict or SiteScanConfig). Merged on
+                top of LLM output. Set `scan.mode="auto"` to still let the
+                LLM pick the routing mode.
+            extract: Structured extraction config (dict or SiteExtractConfig).
+                Fields: `query`, `json_example`, `method` ("auto"|"llm"|
+                "schema"), `schema` (pre-built CSS schema), `sample_url`,
+                `url_pattern`. When set, a schema is generated once from the
+                sample URL and applied to every discovered page.
+            include: Response fields to keep: "markdown", "links", "media",
+                "metadata", "tables", "response_headers". Default includes
+                markdown. **Drop "markdown" from the list to strip it from
+                every result (extract-only mode).**
+            include_markdown: Legacy flag. `False` is equivalent to dropping
+                "markdown" from `include`.
+            strategy: Per-page crawl strategy: "browser" or "http".
+            fit: Apply content pruning for cleaner markdown. Default: True.
+            discovery: Legacy — prefer `scan.mode`. Keeps backward compat
+                with pre-AI clients.
+            pattern: Legacy glob filter — prefer `scan.patterns`.
+            max_depth: Legacy — prefer `scan.max_depth`.
+            crawler_config: Raw CrawlerRunConfig overrides (power user).
+            browser_config: Raw BrowserConfig overrides (power user).
+            proxy: Proxy config. Omit for no proxy.
+            webhook_url: POST target for job-completion callback.
+            priority: Job priority (1-10, 1 = highest). Default: 5.
+            wait: If True, poll until the crawl finishes.
+            poll_interval: Seconds between polls when waiting. Default: 5.0.
+            timeout: Max seconds to wait.
 
         Returns:
-            SiteCrawlResponse with job_id for polling via get_deep_crawl_status()
+            SiteCrawlResponse with `job_id`, `generated_config` (when
+            criteria was set), `extraction_method_used`, and `schema_used`
+            (when extract was set). Poll progress with
+            `get_site_crawl_job(job_id)`.
+
+        Example:
+            ```python
+            # Flagship AI-assisted flow
+            job = await crawler.crawl_site(
+                "https://books.toscrape.com",
+                criteria="all book listing pages",
+                max_pages=50,
+                strategy="http",
+                extract={
+                    "query": "book title, price, rating",
+                    "json_example": {"title": "...", "price": "£0.00", "rating": 0},
+                    "method": "auto",
+                },
+                wait=True,
+                poll_interval=3.0,
+            )
+            print(f"AI reasoning: {job.generated_config.reasoning}")
+            print(f"Extraction: {job.extraction_method_used}")
+            if job.schema_used:
+                print(f"Schema fields: {[f['name'] for f in job.schema_used['fields']]}")
+            ```
         """
+        from crawl4ai_cloud.models import SiteScanConfig, SiteExtractConfig
+
         body: Dict[str, Any] = {
-            "url": url, "max_pages": max_pages,
-            "discovery": discovery, "strategy": strategy, "fit": fit,
+            "url": url,
+            "max_pages": max_pages,
+            "strategy": strategy,
+            "fit": fit,
         }
-        if include:
+
+        # --- AI-assisted fields (new) ---
+        if criteria:
+            body["criteria"] = criteria
+        if scan is not None:
+            if isinstance(scan, SiteScanConfig):
+                body["scan"] = scan.to_dict()
+            elif isinstance(scan, dict):
+                body["scan"] = scan
+            else:
+                raise TypeError(
+                    f"scan must be dict or SiteScanConfig, got {type(scan).__name__}"
+                )
+        if extract is not None:
+            if isinstance(extract, SiteExtractConfig):
+                body["extract"] = extract.to_dict()
+            elif isinstance(extract, dict):
+                body["extract"] = extract
+            else:
+                raise TypeError(
+                    f"extract must be dict or SiteExtractConfig, got {type(extract).__name__}"
+                )
+        if include is not None:
             body["include"] = include
+        if include_markdown is not None:
+            body["include_markdown"] = include_markdown
+
+        # --- Legacy / backward-compat fields ---
+        if discovery != "map":
+            body["discovery"] = discovery
         if pattern:
             body["pattern"] = pattern
         if max_depth is not None:
@@ -1303,18 +1525,78 @@ class AsyncWebCrawler:
             body["webhook_url"] = webhook_url
         body["priority"] = priority
 
-        data = await self._http.request("POST", "/v1/crawl/site", json=body, timeout=120)
+        # Site crawl can take a while when `extract` triggers schema gen
+        # (sample URL fetch + LLM call can take 30-120s by itself).
+        data = await self._http.request(
+            "POST", "/v1/crawl/site", json=body, timeout=240,
+        )
         result = SiteCrawlResponse.from_dict(data)
 
         if wait:
-            await self._wait_scan_job(result.job_id, poll_interval, timeout)
-            # Re-fetch final status
-            final = await self.get_deep_crawl_status(result.job_id)
+            final = await self._wait_site_crawl_job(
+                result.job_id, poll_interval, timeout,
+            )
+            # Transfer polled state back onto the response
             result.status = final.status
-            result.discovered_urls = final.discovered_count
-            result.queued_urls = final.queued_urls
+            result.discovered_urls = final.progress.urls_discovered
 
         return result
+
+    async def get_site_crawl_job(self, job_id: str) -> "SiteCrawlJobStatus":
+        """
+        Poll a site crawl job started via `crawl_site()`.
+
+        This is the **unified** polling endpoint — it merges the scan phase
+        (URL discovery) and the crawl phase (per-page fetch + extract) into
+        one response. `phase` walks through "scan" → "crawl" → "done".
+
+        Returns:
+            SiteCrawlJobStatus with current phase, progress (urls_discovered,
+            urls_crawled, urls_failed, total), and `download_url` once the
+            crawl finishes.
+
+        Example:
+            ```python
+            job = await crawler.crawl_site(
+                "https://books.toscrape.com",
+                criteria="book listings",
+                extract={"query": "book title, price, rating"},
+            )
+
+            while True:
+                status = await crawler.get_site_crawl_job(job.job_id)
+                print(f"{status.phase}: {status.progress.urls_crawled}/{status.progress.total}")
+                if status.is_complete:
+                    print(f"Download: {status.download_url}")
+                    break
+                await asyncio.sleep(3)
+            ```
+        """
+        from crawl4ai_cloud.models import SiteCrawlJobStatus
+        data = await self._http.request(
+            "GET", f"/v1/crawl/site/jobs/{job_id}"
+        )
+        return SiteCrawlJobStatus.from_dict(data)
+
+    async def _wait_site_crawl_job(
+        self,
+        job_id: str,
+        poll_interval: float = 5.0,
+        timeout: Optional[float] = None,
+    ) -> "SiteCrawlJobStatus":
+        """Poll /v1/crawl/site/jobs/{id} until the crawl finishes."""
+        start = time.time()
+        while True:
+            job = await self.get_site_crawl_job(job_id)
+            if job.is_complete:
+                return job
+            if timeout and (time.time() - start) > timeout:
+                raise TimeoutError(
+                    f"Timeout waiting for site crawl {job_id}. "
+                    f"Phase: {job.phase}, "
+                    f"crawled: {job.progress.urls_crawled}/{job.progress.total}"
+                )
+            await asyncio.sleep(poll_interval)
 
     # ---- Wrapper job management (shared implementation) ----
 

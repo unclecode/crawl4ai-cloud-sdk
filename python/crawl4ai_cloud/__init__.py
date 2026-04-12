@@ -17,7 +17,7 @@ Example:
     ```
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 # Main crawler class
 from .crawler import AsyncWebCrawler
@@ -42,7 +42,11 @@ from .models import (
     DeepCrawlResult,
     ScanUrlInfo,
     ScanResult,
+    ScanJobStatus,
     DomainScanUrlInfo,
+    SiteScanConfig,
+    SiteExtractConfig,
+    GeneratedConfig,
     ContextResult,
     GeneratedSchema,
     StorageUsage,
@@ -61,6 +65,8 @@ from .models import (
     MapUrlInfo,
     MapResponse,
     SiteCrawlResponse,
+    SiteCrawlJobStatus,
+    SiteCrawlProgress,
     WrapperJob,
     WrapperJobProgress,
 )
@@ -86,12 +92,14 @@ __all__ = [
     "normalize_proxy", "normalize_url",
     # Core models
     "CrawlResult", "CrawlJob", "JobProgress", "MarkdownResult",
-    "DeepCrawlResult", "ScanUrlInfo", "ScanResult", "DomainScanUrlInfo",
+    "DeepCrawlResult", "ScanUrlInfo", "ScanResult", "ScanJobStatus",
+    "DomainScanUrlInfo", "SiteScanConfig", "SiteExtractConfig", "GeneratedConfig",
     "ContextResult", "GeneratedSchema", "StorageUsage", "ProxyConfig", "LLMUsage",
     "Usage", "CrawlUsageMetrics", "LLMUsageMetrics", "StorageUsageMetrics",
     # Wrapper API models
     "WrapperUsage", "MarkdownResponse", "ScreenshotResponse", "ExtractResponse",
-    "MapUrlInfo", "MapResponse", "SiteCrawlResponse", "WrapperJob", "WrapperJobProgress",
+    "MapUrlInfo", "MapResponse", "SiteCrawlResponse", "SiteCrawlJobStatus",
+    "SiteCrawlProgress", "WrapperJob", "WrapperJobProgress",
     # Errors
     "CloudError", "AuthenticationError", "RateLimitError", "QuotaExceededError",
     "NotFoundError", "ValidationError", "TimeoutError", "ServerError",

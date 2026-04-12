@@ -512,7 +512,15 @@ type ContextOptions struct {
 }
 
 // Scan discovers all URLs under a domain without crawling.
-// Synchronous — results return inline, no polling needed.
+//
+// Two routing strategies (picked by scan.Mode or inferred from Criteria):
+//   - map (sync): DomainMapper — sitemap + CC + wayback. URLs returned inline.
+//   - deep (async): best-first tree traversal. Returns a JobID; poll with
+//     GetScanJob() or pass opts.Wait = true.
+//
+// When opts.Criteria is set, the backend LLM generates a unified scan config
+// (mode, patterns, filters, scorers, query, threshold). Explicit overrides
+// in opts.Scan still win.
 func (c *AsyncWebCrawler) Scan(url string, opts *ScanOptions) (*ScanResult, error) {
 	body := map[string]interface{}{
 		"url": url,
@@ -545,14 +553,85 @@ func (c *AsyncWebCrawler) Scan(url string, opts *ScanOptions) (*ScanResult, erro
 		if opts.ProbeThreshold != nil {
 			body["probe_threshold"] = *opts.ProbeThreshold
 		}
+		// AI-assisted fields
+		if opts.Criteria != "" {
+			body["criteria"] = opts.Criteria
+		}
+		if opts.Scan != nil {
+			body["scan"] = opts.Scan.ToMap()
+		}
 	}
 
-	data, err := c.http.Post("/v1/scan", body, 0)
+	// Longer HTTP timeout — LLM config gen can take a while.
+	data, err := c.http.Post("/v1/scan", body, 180*time.Second)
 	if err != nil {
 		return nil, err
 	}
 
-	return ScanResultFromMap(data), nil
+	result := ScanResultFromMap(data)
+
+	// If the LLM picked deep mode (or the caller forced it) and opts.Wait is set,
+	// block until the scan job finishes and merge state back onto the result.
+	if opts != nil && opts.Wait && result.IsAsync() {
+		final, err := c.waitScanJobV2(result.JobID, opts.PollInterval, opts.Timeout)
+		if err != nil {
+			return result, err
+		}
+		result.Status = final.Status
+		result.TotalUrls = final.TotalUrls
+		result.Urls = final.Urls
+		result.DurationMs = final.DurationMs
+		if final.Error != "" {
+			result.Error = final.Error
+		}
+	}
+
+	return result, nil
+}
+
+// GetScanJob polls a deep scan job started via Scan() with scan.Mode = "deep".
+// Returns current discovered URLs, progress, and status. URLs are appended
+// as they're discovered.
+func (c *AsyncWebCrawler) GetScanJob(jobID string) (*ScanJobStatus, error) {
+	data, err := c.http.Get(fmt.Sprintf("/v1/scan/jobs/%s", jobID), nil)
+	if err != nil {
+		return nil, err
+	}
+	return ScanJobStatusFromMap(data), nil
+}
+
+// CancelScanJob cancels a running deep scan. Cancellation happens at the next
+// batch boundary — partial results (URLs discovered so far) are preserved.
+func (c *AsyncWebCrawler) CancelScanJob(jobID string) (*ScanJobStatus, error) {
+	data, err := c.http.Post(fmt.Sprintf("/v1/scan/jobs/%s/cancel", jobID), nil, 0)
+	if err != nil {
+		return nil, err
+	}
+	return ScanJobStatusFromMap(data), nil
+}
+
+// waitScanJobV2 polls /v1/scan/jobs/{id} until the deep scan finishes.
+func (c *AsyncWebCrawler) waitScanJobV2(jobID string, pollInterval, timeout time.Duration) (*ScanJobStatus, error) {
+	if pollInterval == 0 {
+		pollInterval = 2 * time.Second
+	}
+	start := time.Now()
+	for {
+		job, err := c.GetScanJob(jobID)
+		if err != nil {
+			return nil, err
+		}
+		if job.IsComplete() {
+			return job, nil
+		}
+		if timeout > 0 && time.Since(start) > timeout {
+			return nil, NewTimeoutError(fmt.Sprintf(
+				"timeout waiting for scan job %s. Status: %s, found: %d",
+				jobID, job.Status, job.TotalUrls,
+			))
+		}
+		time.Sleep(pollInterval)
+	}
 }
 
 // Context builds context from a search query.
@@ -884,6 +963,12 @@ func (c *AsyncWebCrawler) Map(url string, opts *MapOptions) (*MapResponse, error
 }
 
 // CrawlSite crawls an entire website. Always async.
+//
+// AI-assisted flagship flow: set opts.Criteria (plain English) and let the
+// LLM pick the scan strategy, generate URL filters, and (optionally) build an
+// extraction schema from a sample URL via opts.Extract. Poll one unified
+// endpoint for both scan and crawl phases with GetSiteCrawlJob(), or pass
+// opts.Wait = true to block until completion.
 func (c *AsyncWebCrawler) CrawlSite(url string, opts *SiteCrawlOptions) (*SiteCrawlResponse, error) {
 	if opts == nil {
 		opts = &SiteCrawlOptions{}
@@ -891,10 +976,6 @@ func (c *AsyncWebCrawler) CrawlSite(url string, opts *SiteCrawlOptions) (*SiteCr
 	maxPages := opts.MaxPages
 	if maxPages == 0 {
 		maxPages = 20
-	}
-	discovery := opts.Discovery
-	if discovery == "" {
-		discovery = "map"
 	}
 	strategy := opts.Strategy
 	if strategy == "" {
@@ -910,8 +991,27 @@ func (c *AsyncWebCrawler) CrawlSite(url string, opts *SiteCrawlOptions) (*SiteCr
 	}
 
 	body := map[string]interface{}{
-		"url": url, "max_pages": maxPages, "discovery": discovery,
+		"url": url, "max_pages": maxPages,
 		"strategy": strategy, "fit": fit, "priority": priority,
+	}
+
+	// --- AI-assisted fields (new) ---
+	if opts.Criteria != "" {
+		body["criteria"] = opts.Criteria
+	}
+	if opts.Scan != nil {
+		body["scan"] = opts.Scan.ToMap()
+	}
+	if opts.Extract != nil {
+		body["extract"] = opts.Extract.ToMap()
+	}
+	if opts.IncludeMarkdown != nil {
+		body["include_markdown"] = *opts.IncludeMarkdown
+	}
+
+	// --- Legacy / backward-compat fields ---
+	if opts.Discovery != "" && opts.Discovery != "map" {
+		body["discovery"] = opts.Discovery
 	}
 	if len(opts.Include) > 0 {
 		body["include"] = opts.Include
@@ -935,11 +1035,64 @@ func (c *AsyncWebCrawler) CrawlSite(url string, opts *SiteCrawlOptions) (*SiteCr
 		body["webhook_url"] = opts.WebhookURL
 	}
 
-	data, err := c.http.Post("/v1/crawl/site", body, 120*time.Second)
+	// Longer timeout — extract triggers schema gen (sample fetch + LLM call)
+	// which can take 30-120s before the job is even created.
+	data, err := c.http.Post("/v1/crawl/site", body, 240*time.Second)
 	if err != nil {
 		return nil, err
 	}
-	return unmarshalWrapper[SiteCrawlResponse](data)
+	result, err := unmarshalWrapper[SiteCrawlResponse](data)
+	if err != nil {
+		return nil, err
+	}
+
+	if opts.Wait && result.JobID != "" {
+		final, err := c.waitSiteCrawlJob(result.JobID, opts.PollInterval, opts.Timeout)
+		if err != nil {
+			return result, err
+		}
+		// Transfer polled state back onto the response
+		result.Status = final.Status
+		result.DiscoveredURLs = final.Progress.UrlsDiscovered
+	}
+
+	return result, nil
+}
+
+// GetSiteCrawlJob polls a site crawl job started via CrawlSite(). This is the
+// unified polling endpoint — it merges the scan phase (URL discovery) and the
+// crawl phase (per-page fetch + extract) into one response. Phase walks
+// through "scan" → "crawl" → "done".
+func (c *AsyncWebCrawler) GetSiteCrawlJob(jobID string) (*SiteCrawlJobStatus, error) {
+	data, err := c.http.Get(fmt.Sprintf("/v1/crawl/site/jobs/%s", jobID), nil)
+	if err != nil {
+		return nil, err
+	}
+	return unmarshalWrapper[SiteCrawlJobStatus](data)
+}
+
+// waitSiteCrawlJob polls /v1/crawl/site/jobs/{id} until the crawl finishes.
+func (c *AsyncWebCrawler) waitSiteCrawlJob(jobID string, pollInterval, timeout time.Duration) (*SiteCrawlJobStatus, error) {
+	if pollInterval == 0 {
+		pollInterval = 5 * time.Second
+	}
+	start := time.Now()
+	for {
+		job, err := c.GetSiteCrawlJob(jobID)
+		if err != nil {
+			return nil, err
+		}
+		if job.IsComplete() {
+			return job, nil
+		}
+		if timeout > 0 && time.Since(start) > timeout {
+			return nil, NewTimeoutError(fmt.Sprintf(
+				"timeout waiting for site crawl %s. Phase: %s, crawled: %d/%d",
+				jobID, job.Phase, job.Progress.UrlsCrawled, job.Progress.Total,
+			))
+		}
+		time.Sleep(pollInterval)
+	}
 }
 
 // ---- Wrapper job management ----

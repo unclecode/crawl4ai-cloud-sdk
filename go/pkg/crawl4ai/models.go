@@ -1,5 +1,7 @@
 package crawl4ai
 
+import "time"
+
 // ProxyConfig represents proxy configuration for crawl requests.
 type ProxyConfig struct {
 	Mode          string `json:"mode"`
@@ -267,7 +269,116 @@ type DomainScanURLInfo struct {
 	HeadData       map[string]interface{} `json:"head_data,omitempty"`
 }
 
+// SiteScanConfig is the unified scan configuration for AI-assisted URL
+// discovery. Used by /v1/scan and /v1/crawl/site. When `criteria` is set on
+// the parent request, the AI config generator fills unset fields here;
+// explicit fields always win over LLM output.
+type SiteScanConfig struct {
+	Mode              string                 `json:"mode,omitempty"` // "auto" | "map" | "deep"
+	Patterns          []string               `json:"patterns,omitempty"`
+	Filters           map[string]interface{} `json:"filters,omitempty"`
+	Scorers           map[string]interface{} `json:"scorers,omitempty"`
+	Query             string                 `json:"query,omitempty"`
+	ScoreThreshold    *float64               `json:"score_threshold,omitempty"`
+	IncludeSubdomains bool                   `json:"include_subdomains,omitempty"`
+	MaxDepth          *int                   `json:"max_depth,omitempty"`
+}
+
+// ToMap converts SiteScanConfig to a request body dict, omitting zero values.
+func (s *SiteScanConfig) ToMap() map[string]interface{} {
+	if s == nil {
+		return nil
+	}
+	d := map[string]interface{}{}
+	if s.Mode != "" {
+		d["mode"] = s.Mode
+	} else {
+		d["mode"] = "auto"
+	}
+	if s.Patterns != nil {
+		d["patterns"] = s.Patterns
+	}
+	if s.Filters != nil {
+		d["filters"] = s.Filters
+	}
+	if s.Scorers != nil {
+		d["scorers"] = s.Scorers
+	}
+	if s.Query != "" {
+		d["query"] = s.Query
+	}
+	if s.ScoreThreshold != nil {
+		d["score_threshold"] = *s.ScoreThreshold
+	}
+	if s.IncludeSubdomains {
+		d["include_subdomains"] = true
+	}
+	if s.MaxDepth != nil {
+		d["max_depth"] = *s.MaxDepth
+	}
+	return d
+}
+
+// SiteExtractConfig is the structured extraction configuration for
+// /v1/crawl/site. Mirrors /v1/extract's shape. When set without a pre-built
+// schema, the backend fetches `SampleURL` (defaults to the crawl's start URL),
+// generates a schema via LLM, and applies it to every discovered URL.
+type SiteExtractConfig struct {
+	Query       string                 `json:"query,omitempty"`
+	JSONExample map[string]interface{} `json:"json_example,omitempty"`
+	Method      string                 `json:"method,omitempty"` // "auto" | "llm" | "schema"
+	Schema      map[string]interface{} `json:"schema,omitempty"`
+	SampleURL   string                 `json:"sample_url,omitempty"`
+	URLPattern  string                 `json:"url_pattern,omitempty"`
+}
+
+// ToMap converts SiteExtractConfig to a request body dict.
+func (e *SiteExtractConfig) ToMap() map[string]interface{} {
+	if e == nil {
+		return nil
+	}
+	d := map[string]interface{}{}
+	if e.Method != "" {
+		d["method"] = e.Method
+	} else {
+		d["method"] = "auto"
+	}
+	if e.Query != "" {
+		d["query"] = e.Query
+	}
+	if e.JSONExample != nil {
+		d["json_example"] = e.JSONExample
+	}
+	if e.Schema != nil {
+		d["schema"] = e.Schema
+	}
+	if e.SampleURL != "" {
+		d["sample_url"] = e.SampleURL
+	}
+	if e.URLPattern != "" {
+		d["url_pattern"] = e.URLPattern
+	}
+	return d
+}
+
+// GeneratedConfig is the LLM-generated config echoed back by /v1/scan and
+// /v1/crawl/site when `criteria` was set. Contains the scan config and
+// (for /v1/crawl/site) the extract config, plus LLM reasoning and
+// cache/fallback flags.
+type GeneratedConfig struct {
+	Scan      map[string]interface{} `json:"scan"`
+	Reasoning string                 `json:"reasoning"`
+	Extract   map[string]interface{} `json:"extract,omitempty"`
+	Fallback  bool                   `json:"fallback"`
+	Cached    bool                   `json:"cached"`
+}
+
 // ScanResult represents a domain scan response (/v1/scan).
+//
+// For map mode (sync): Urls is populated inline.
+// For deep mode (async): JobID + Status are set; poll with GetScanJob().
+// When `criteria` was supplied in the request, GeneratedConfig carries the
+// LLM output and ModeUsed tells you which strategy ran.
 type ScanResult struct {
 	Success    bool                `json:"success"`
 	Domain     string              `json:"domain"`
@@ -277,11 +388,23 @@ type ScanResult struct {
 	Urls       []DomainScanURLInfo `json:"urls"`
 	DurationMs int                 `json:"duration_ms"`
 	Error      string              `json:"error,omitempty"`
+	// AI-assisted / async fields
+	ModeUsed        string           `json:"mode_used,omitempty"` // "map" | "deep"
+	JobID           string           `json:"job_id,omitempty"`
+	Status          string           `json:"status,omitempty"`
+	GeneratedConfig *GeneratedConfig `json:"generated_config,omitempty"`
+	Message         string           `json:"message,omitempty"`
+}
+
+// IsAsync returns true when the response is for an async (deep) scan and the
+// caller should poll via GetScanJob().
+func (r *ScanResult) IsAsync() bool {
+	return r.ModeUsed == "deep" && r.JobID != ""
 }
 
 // ScanOptions configures a domain scan request.
 type ScanOptions struct {
-	Mode              string   `json:"mode,omitempty"` // "default" or "deep"
+	Mode              string   `json:"mode,omitempty"` // "default" or "deep" — DomainMapper source depth
 	MaxUrls           int      `json:"max_urls,omitempty"`
 	IncludeSubdomains *bool    `json:"include_subdomains,omitempty"`
 	ExtractHead       *bool    `json:"extract_head,omitempty"`
@@ -290,6 +413,47 @@ type ScanOptions struct {
 	ScoreThreshold    *float64 `json:"score_threshold,omitempty"`
 	Force             bool     `json:"force,omitempty"`
 	ProbeThreshold    *int     `json:"probe_threshold,omitempty"`
+
+	// AI-assisted fields (new in 0.4.0)
+	Criteria string          `json:"-"` // plain-English — triggers LLM config gen
+	Scan     *SiteScanConfig `json:"-"` // explicit scan overrides
+
+	// Async polling (only used when scan.Mode = "deep")
+	Wait         bool          `json:"-"`
+	PollInterval time.Duration `json:"-"`
+	Timeout      time.Duration `json:"-"`
+}
+
+// ScanJobStatus is the polling response for GET /v1/scan/jobs/{job_id} — used
+// with async deep scans. URLs are appended to Urls as they're discovered.
+// Progress carries {completed, total} once the backend starts tracking.
+type ScanJobStatus struct {
+	JobID           string              `json:"job_id"`
+	Status          string              `json:"status"`
+	ModeUsed        string              `json:"mode_used"`
+	Domain          string              `json:"domain,omitempty"`
+	TotalUrls       int                 `json:"total_urls"`
+	Urls            []DomainScanURLInfo `json:"urls,omitempty"`
+	Progress        map[string]int      `json:"progress,omitempty"`
+	GeneratedConfig *GeneratedConfig    `json:"generated_config,omitempty"`
+	DurationMs      int                 `json:"duration_ms"`
+	Error           string              `json:"error,omitempty"`
+	CreatedAt       string              `json:"created_at,omitempty"`
+	CompletedAt     string              `json:"completed_at,omitempty"`
+}
+
+// IsComplete returns true when the scan job has finished (terminal state).
+func (j *ScanJobStatus) IsComplete() bool {
+	switch j.Status {
+	case "completed", "partial", "failed", "cancelled":
+		return true
+	}
+	return false
+}
+
+// IsSuccessful returns true when the scan job completed with usable results.
+func (j *ScanJobStatus) IsSuccessful() bool {
+	return j.Status == "completed" || j.Status == "partial"
 }
 
 // ScanResultFromMap creates a ScanResult from API response map.
@@ -320,28 +484,122 @@ func ScanResultFromMap(data map[string]interface{}) *ScanResult {
 	if urls, ok := data["urls"].([]interface{}); ok {
 		for _, u := range urls {
 			if um, ok := u.(map[string]interface{}); ok {
-				info := DomainScanURLInfo{Status: "valid"}
-				if v, ok := um["url"].(string); ok {
-					info.URL = v
-				}
-				if v, ok := um["host"].(string); ok {
-					info.Host = v
-				}
-				if v, ok := um["status"].(string); ok {
-					info.Status = v
-				}
-				if score, ok := um["relevance_score"].(float64); ok {
-					info.RelevanceScore = &score
-				}
-				if hd, ok := um["head_data"].(map[string]interface{}); ok {
-					info.HeadData = hd
-				}
-				result.Urls = append(result.Urls, info)
+				result.Urls = append(result.Urls, domainScanURLInfoFromMap(um))
 			}
 		}
 	}
 
+	// AI-assisted / async fields
+	if v, ok := data["mode_used"].(string); ok {
+		result.ModeUsed = v
+	}
+	if v, ok := data["job_id"].(string); ok {
+		result.JobID = v
+	}
+	if v, ok := data["status"].(string); ok {
+		result.Status = v
+	}
+	if v, ok := data["message"].(string); ok {
+		result.Message = v
+	}
+	if gc, ok := data["generated_config"].(map[string]interface{}); ok {
+		result.GeneratedConfig = generatedConfigFromMap(gc)
+	}
+
 	return result
+}
+
+// domainScanURLInfoFromMap is a shared helper used by ScanResult + ScanJobStatus.
+func domainScanURLInfoFromMap(um map[string]interface{}) DomainScanURLInfo {
+	info := DomainScanURLInfo{Status: "valid"}
+	if v, ok := um["url"].(string); ok {
+		info.URL = v
+	}
+	if v, ok := um["host"].(string); ok {
+		info.Host = v
+	}
+	if v, ok := um["status"].(string); ok {
+		info.Status = v
+	}
+	if score, ok := um["relevance_score"].(float64); ok {
+		info.RelevanceScore = &score
+	}
+	if hd, ok := um["head_data"].(map[string]interface{}); ok {
+		info.HeadData = hd
+	}
+	return info
+}
+
+// generatedConfigFromMap decodes the generated_config block.
+func generatedConfigFromMap(data map[string]interface{}) *GeneratedConfig {
+	gc := &GeneratedConfig{}
+	if v, ok := data["scan"].(map[string]interface{}); ok {
+		gc.Scan = v
+	}
+	if v, ok := data["reasoning"].(string); ok {
+		gc.Reasoning = v
+	}
+	if v, ok := data["extract"].(map[string]interface{}); ok {
+		gc.Extract = v
+	}
+	if v, ok := data["fallback"].(bool); ok {
+		gc.Fallback = v
+	}
+	if v, ok := data["cached"].(bool); ok {
+		gc.Cached = v
+	}
+	return gc
+}
+
+// ScanJobStatusFromMap creates a ScanJobStatus from API response map.
+func ScanJobStatusFromMap(data map[string]interface{}) *ScanJobStatus {
+	js := &ScanJobStatus{ModeUsed: "deep"}
+	if v, ok := data["job_id"].(string); ok {
+		js.JobID = v
+	}
+	if v, ok := data["status"].(string); ok {
+		js.Status = v
+	}
+	if v, ok := data["mode_used"].(string); ok {
+		js.ModeUsed = v
+	}
+	if v, ok := data["domain"].(string); ok {
+		js.Domain = v
+	}
+	if v, ok := data["total_urls"].(float64); ok {
+		js.TotalUrls = int(v)
+	}
+	if v, ok := data["duration_ms"].(float64); ok {
+		js.DurationMs = int(v)
+	}
+	if v, ok := data["error"].(string); ok {
+		js.Error = v
+	}
+	if v, ok := data["created_at"].(string); ok {
+		js.CreatedAt = v
+	}
+	if v, ok := data["completed_at"].(string); ok {
+		js.CompletedAt = v
+	}
+	if urls, ok := data["urls"].([]interface{}); ok {
+		for _, u := range urls {
+			if um, ok := u.(map[string]interface{}); ok {
+				js.Urls = append(js.Urls, domainScanURLInfoFromMap(um))
+			}
+		}
+	}
+	if p, ok := data["progress"].(map[string]interface{}); ok {
+		js.Progress = map[string]int{}
+		for k, val := range p {
+			if f, ok := val.(float64); ok {
+				js.Progress[k] = int(f)
+			}
+		}
+	}
+	if gc, ok := data["generated_config"].(map[string]interface{}); ok {
+		js.GeneratedConfig = generatedConfigFromMap(gc)
+	}
+	return js
 }
 
 // DeepCrawlResult represents a deep crawl response.
@@ -650,13 +908,67 @@ type MapResponse struct {
 }
 
 // SiteCrawlResponse represents the response from POST /v1/crawl/site.
+//
+// When `criteria` was in the request, GeneratedConfig carries the LLM-generated
+// scan + extract config. When `extract` was set, ExtractionMethodUsed tells you
+// whether CSS schema generation or LLM extraction was picked, and SchemaUsed
+// holds the generated CSS schema (if any).
+//
+// Poll progress with GetSiteCrawlJob(job_id).
 type SiteCrawlResponse struct {
-	JobID          string `json:"job_id"`
-	Status         string `json:"status"`
-	Strategy       string `json:"strategy"`
-	DiscoveredURLs int    `json:"discovered_urls"`
-	QueuedURLs     int    `json:"queued_urls"`
-	CreatedAt      string `json:"created_at"`
+	JobID                string                 `json:"job_id"`
+	Status               string                 `json:"status"`
+	Strategy             string                 `json:"strategy"`
+	DiscoveredURLs       int                    `json:"discovered_urls"`
+	QueuedURLs           int                    `json:"queued_urls"`
+	CreatedAt            string                 `json:"created_at"`
+	GeneratedConfig      *GeneratedConfig       `json:"generated_config,omitempty"`
+	ExtractionMethodUsed string                 `json:"extraction_method_used,omitempty"` // "llm" | "css_schema"
+	SchemaUsed           map[string]interface{} `json:"schema_used,omitempty"`
+}
+
+// SiteCrawlProgress is the progress block inside SiteCrawlJobStatus.
+type SiteCrawlProgress struct {
+	UrlsDiscovered int `json:"urls_discovered"`
+	UrlsCrawled    int `json:"urls_crawled"`
+	UrlsFailed     int `json:"urls_failed"`
+	Total          int `json:"total"`
+}
+
+// SiteCrawlJobStatus is the polling response for GET /v1/crawl/site/jobs/{job_id}.
+//
+// Unified scan+crawl polling endpoint. Phase walks through three values:
+// "scan" (URL discovery in progress), "crawl" (pages being fetched + extracted),
+// "done" (everything finished). When Phase is "done" and Status is "completed",
+// DownloadURL is a fresh S3 presigned URL (1-hour expiry) for the result ZIP.
+type SiteCrawlJobStatus struct {
+	JobID       string            `json:"job_id"`
+	Status      string            `json:"status"`
+	Phase       string            `json:"phase"` // "scan" | "crawl" | "done"
+	Progress    SiteCrawlProgress `json:"progress"`
+	ScanJobID   string            `json:"scan_job_id,omitempty"`
+	CrawlJobID  string            `json:"crawl_job_id,omitempty"`
+	DownloadURL string            `json:"download_url,omitempty"`
+	CreatedAt   string            `json:"created_at,omitempty"`
+	CompletedAt string            `json:"completed_at,omitempty"`
+	Error       string            `json:"error,omitempty"`
+}
+
+// IsComplete returns true when the site crawl is in a terminal state.
+func (j *SiteCrawlJobStatus) IsComplete() bool {
+	if j.Phase == "done" {
+		return true
+	}
+	switch j.Status {
+	case "completed", "partial", "failed", "cancelled":
+		return true
+	}
+	return false
+}
+
+// IsSuccessful returns true when the crawl finished with usable results.
+func (j *SiteCrawlJobStatus) IsSuccessful() bool {
+	return j.Status == "completed" || j.Status == "partial"
 }
 
 // WrapperJobProgress represents progress of a wrapper async job.
@@ -760,4 +1072,15 @@ type SiteCrawlOptions struct {
 	Proxy         map[string]interface{} `json:"proxy,omitempty"`
 	WebhookURL    string                 `json:"webhook_url,omitempty"`
 	Priority      int                    `json:"priority,omitempty"`
+
+	// AI-assisted fields (new in 0.4.0)
+	Criteria        string             `json:"-"` // plain-English — triggers LLM config gen
+	Scan            *SiteScanConfig    `json:"-"` // explicit scan overrides
+	Extract         *SiteExtractConfig `json:"-"` // structured extraction config
+	IncludeMarkdown *bool              `json:"-"` // legacy flag; nil = unset
+
+	// Async polling
+	Wait         bool          `json:"-"`
+	PollInterval time.Duration `json:"-"`
+	Timeout      time.Duration `json:"-"`
 }

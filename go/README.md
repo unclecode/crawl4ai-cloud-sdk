@@ -63,12 +63,11 @@ for _, item := range data.Data {
 }
 ```
 
-### Discover All URLs on a Domain
+### Discover All URLs on a Domain (simple, sync)
 
 ```go
-maxURLs := 50
 result, err := c.Map("https://crawl4ai.com", &crawl4ai.MapOptions{
-    MaxURLs: &maxURLs,
+    MaxURLs: 50,
 })
 if err != nil {
     log.Fatal(err)
@@ -80,19 +79,59 @@ for _, u := range result.URLs {
 }
 ```
 
-### Crawl an Entire Site
+### Scan URLs (AI-assisted)
+
+Pass a plain-English `Criteria` and let the backend LLM pick scan mode, URL patterns, filters.
 
 ```go
-site, err := c.CrawlSite("https://docs.example.com", &crawl4ai.SiteCrawlOptions{
-    MaxPages:  100,
-    Discovery: "map",
-    Strategy:  "browser",
+result, err := c.Scan("https://docs.crawl4ai.com", &crawl4ai.ScanOptions{
+    Criteria: "API reference and core documentation pages",
+    MaxUrls:  50,
 })
 if err != nil {
     log.Fatal(err)
 }
 
-fmt.Printf("Job %s queued, %d URLs discovered\n", site.JobID, site.DiscoveredURLs)
+fmt.Printf("Mode used: %s\n", result.ModeUsed)           // "map" or "deep"
+fmt.Printf("Found: %d URLs\n", result.TotalUrls)
+if result.GeneratedConfig != nil {
+    fmt.Printf("AI reasoning: %s\n", result.GeneratedConfig.Reasoning)
+}
+```
+
+### Crawl an Entire Site with Auto-Extraction (flagship)
+
+```go
+site, err := c.CrawlSite("https://books.toscrape.com", &crawl4ai.SiteCrawlOptions{
+    Criteria: "all book listing pages",
+    MaxPages: 50,
+    Strategy: "http",
+    Extract: &crawl4ai.SiteExtractConfig{
+        Query:       "book title, price, rating",
+        JSONExample: map[string]interface{}{"title": "...", "price": "£0.00", "rating": 0},
+        Method:      "auto", // picks CSS schema vs LLM
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Job %s started\n", site.JobID)
+fmt.Printf("Extraction: %s\n", site.ExtractionMethodUsed) // "css_schema" or "llm"
+fmt.Printf("Schema generated: %v\n", site.SchemaUsed != nil)
+
+// Unified polling: one endpoint for scan + crawl phases
+for {
+    status, _ := c.GetSiteCrawlJob(site.JobID)
+    fmt.Printf("%s: %d/%d\n", status.Phase, status.Progress.UrlsCrawled, status.Progress.Total)
+    if status.IsComplete() {
+        if status.DownloadURL != "" {
+            fmt.Printf("Download: %s\n", status.DownloadURL)
+        }
+        break
+    }
+    time.Sleep(3 * time.Second)
+}
 ```
 
 ## Wrapper API Reference
@@ -102,8 +141,9 @@ fmt.Printf("Job %s queued, %d URLs discovered\n", site.JobID, site.DiscoveredURL
 | `Markdown(url, opts)` | `POST /v1/markdown` | `*MarkdownResponse` | Clean markdown, optionally with links/media/metadata |
 | `Screenshot(url, opts)` | `POST /v1/screenshot` | `*ScreenshotResponse` | Full-page screenshot (base64) or PDF |
 | `Extract(url, opts)` | `POST /v1/extract` | `*ExtractResponse` | Structured data via auto, CSS, or LLM extraction |
-| `Map(url, opts)` | `POST /v1/map` | `*MapResponse` | Discover all URLs on a domain (sitemap + crawl) |
-| `CrawlSite(url, opts)` | `POST /v1/crawl/site` | `*SiteCrawlResponse` | Crawl an entire site (always async, returns job ID) |
+| `Map(url, opts)` | `POST /v1/map` | `*MapResponse` | Simple URL discovery (always sync) |
+| `Scan(url, opts)` | `POST /v1/scan` | `*ScanResult` | **AI-assisted** URL discovery with plain-English criteria |
+| `CrawlSite(url, opts)` | `POST /v1/crawl/site` | `*SiteCrawlResponse` | **AI-assisted** whole-site crawl (always async) |
 
 Every wrapper method accepts `nil` for options to use sensible defaults.
 
@@ -149,34 +189,80 @@ data, err := c.Extract("https://example.com", &crawl4ai.ExtractOptions{
 })
 ```
 
-### Map Options
+### Map Options (legacy, sync-only)
 
 ```go
-maxURLs := 200
 threshold := 0.5
 result, err := c.Map("https://example.com", &crawl4ai.MapOptions{
-    MaxURLs:           &maxURLs,
+    MaxURLs:           200,
     IncludeSubdomains: true,
     Query:             "blog posts",
     ScoreThreshold:    &threshold,
 })
 ```
 
-### CrawlSite Options
+### Scan Options (AI-assisted)
 
 ```go
+// AI picks everything from criteria
+result, err := c.Scan("https://docs.crawl4ai.com", &crawl4ai.ScanOptions{
+    Criteria: "API reference pages",
+    MaxUrls:  50,
+})
+
+// Explicit overrides on top of LLM output
 maxDepth := 3
-site, err := c.CrawlSite("https://docs.example.com", &crawl4ai.SiteCrawlOptions{
-    MaxPages:  200,
-    Discovery: "map",               // "map" (default) or "crawl"
-    Strategy:  "browser",           // "browser" (default) or "http"
-    MaxDepth:  &maxDepth,
-    Pattern:   "/docs/*",
-    Include:   []string{"links"},
-    Priority:  10,                  // 1 (low), 5 (default), 10 (high)
-    WebhookURL: "https://example.com/webhook",
+result, err := c.Scan("https://example.com", &crawl4ai.ScanOptions{
+    Criteria: "product pages",
+    Scan: &crawl4ai.SiteScanConfig{
+        Mode:     "auto",  // "auto" | "map" | "deep"
+        Patterns: []string{"*/p/*"},
+        MaxDepth: &maxDepth,
+    },
+})
+
+// Async deep scan (waits for completion)
+result, err := c.Scan("https://directory.example.com", &crawl4ai.ScanOptions{
+    Criteria:     "company profile pages",
+    Scan:         &crawl4ai.SiteScanConfig{Mode: "deep", MaxDepth: &maxDepth},
+    Wait:         true,
+    PollInterval: 3 * time.Second,
 })
 ```
+
+### CrawlSite Options (AI-assisted flagship)
+
+```go
+site, err := c.CrawlSite("https://books.toscrape.com", &crawl4ai.SiteCrawlOptions{
+    // AI-assisted fields (new in v0.4.0)
+    Criteria: "all book listing pages",
+    Scan: &crawl4ai.SiteScanConfig{                   // optional explicit override
+        Mode: "auto",
+    },
+    Extract: &crawl4ai.SiteExtractConfig{
+        Query:       "book title, price, rating",
+        JSONExample: map[string]interface{}{"title": "...", "price": "£0.00", "rating": 0},
+        Method:      "auto",                           // "auto" | "llm" | "schema"
+    },
+    Include: []string{"markdown", "links"},            // drop "markdown" to strip it
+    // Standard fields
+    MaxPages: 50,
+    Strategy: "http",
+    // Legacy fields (still supported)
+    Discovery: "map",
+    Pattern:   "/docs/*",
+    // Waiting
+    Wait:         true,
+    PollInterval: 5 * time.Second,
+    Timeout:      300 * time.Second,
+})
+
+// site.GeneratedConfig         -- LLM's scan + extract decisions
+// site.ExtractionMethodUsed    -- "css_schema" | "llm"
+// site.SchemaUsed              -- generated CSS schema (reusable!)
+```
+
+**Drop markdown with `Include`**: pass `Include: []string{"links", "media"}` (without `"markdown"`) and the worker strips markdown from every result.
 
 ## Job Management
 
@@ -198,6 +284,15 @@ job, err = c.GetExtractJob(jobID)
 err = c.CancelMarkdownJob(jobID)
 err = c.CancelScreenshotJob(jobID)
 err = c.CancelExtractJob(jobID)
+
+// Scan jobs (AI-assisted deep scans)
+scanJob, err := c.GetScanJob(jobID)                    // URLs discovered so far + progress
+cancelled, err := c.CancelScanJob(jobID)               // preserves partial results
+
+// Site crawl jobs (unified scan + crawl polling)
+status, err := c.GetSiteCrawlJob(jobID)                // phase: "scan" | "crawl" | "done"
+fmt.Printf("%s: %d/%d\n", status.Phase, status.Progress.UrlsCrawled, status.Progress.Total)
+// status.DownloadURL is set when phase == "done" && status.Status == "completed"
 ```
 
 The `WrapperJob` struct provides:
@@ -216,6 +311,8 @@ type WrapperJob struct {
 
 job.IsComplete() // true for completed, partial, failed, cancelled
 ```
+
+`ScanJobStatus` and `SiteCrawlJobStatus` both provide an `IsComplete()` method with the same semantics.
 
 ## Power User: CrawlerConfig and BrowserConfig
 

@@ -204,6 +204,240 @@ func TestWrapperCrawlSite(t *testing.T) {
 			t.Fatal("expected job_id")
 		}
 	})
+
+	t.Run("with_criteria", func(t *testing.T) {
+		// AI-assisted: criteria triggers LLM config generation
+		result, err := c.CrawlSite("https://books.toscrape.com", &SiteCrawlOptions{
+			Criteria: "book listing pages",
+			MaxPages: 3,
+			Strategy: "http",
+		})
+		if err != nil {
+			t.Fatalf("CrawlSite with criteria: %v", err)
+		}
+		if result.JobID == "" {
+			t.Fatal("expected job_id")
+		}
+		if result.GeneratedConfig == nil {
+			t.Fatal("expected generated_config when criteria is set")
+		}
+		if result.GeneratedConfig.Reasoning == "" {
+			t.Fatal("expected non-empty reasoning")
+		}
+		if result.GeneratedConfig.Fallback {
+			t.Fatal("expected fallback=false on stage")
+		}
+	})
+
+	t.Run("with_criteria_and_extract_flagship", func(t *testing.T) {
+		// Flagship: criteria + extract -> schema generated from sample URL
+		result, err := c.CrawlSite("https://books.toscrape.com", &SiteCrawlOptions{
+			Criteria: "book listing pages",
+			MaxPages: 3,
+			Strategy: "http",
+			Extract: &SiteExtractConfig{
+				Query:       "book title and price",
+				JSONExample: map[string]interface{}{"title": "...", "price": "£0.00"},
+				Method:      "auto",
+			},
+		})
+		if err != nil {
+			t.Fatalf("CrawlSite flagship: %v", err)
+		}
+		if result.JobID == "" {
+			t.Fatal("expected job_id")
+		}
+		if result.GeneratedConfig == nil {
+			t.Fatal("expected generated_config")
+		}
+		if result.ExtractionMethodUsed != "css_schema" && result.ExtractionMethodUsed != "llm" {
+			t.Fatalf("expected extraction_method_used, got %q", result.ExtractionMethodUsed)
+		}
+		if result.ExtractionMethodUsed == "css_schema" {
+			if result.SchemaUsed == nil {
+				t.Fatal("expected schema_used when method is css_schema")
+			}
+			if _, ok := result.SchemaUsed["fields"]; !ok {
+				t.Fatal("expected 'fields' in schema_used")
+			}
+		}
+	})
+
+	t.Run("scan_config_struct", func(t *testing.T) {
+		threshold := 0.2
+		result, err := c.CrawlSite("https://books.toscrape.com", &SiteCrawlOptions{
+			MaxPages: 3,
+			Strategy: "http",
+			Scan: &SiteScanConfig{
+				Mode:           "map",
+				Patterns:       []string{"*/catalogue/*"},
+				ScoreThreshold: &threshold,
+			},
+		})
+		if err != nil {
+			t.Fatalf("CrawlSite with scan config: %v", err)
+		}
+		if result.JobID == "" {
+			t.Fatal("expected job_id")
+		}
+	})
+
+	t.Run("unified_polling", func(t *testing.T) {
+		result, err := c.CrawlSite("https://books.toscrape.com", &SiteCrawlOptions{
+			Criteria: "book listings",
+			MaxPages: 3,
+			Strategy: "http",
+		})
+		if err != nil {
+			t.Fatalf("CrawlSite: %v", err)
+		}
+
+		// Poll up to 5 times to see phase transition
+		for i := 0; i < 5; i++ {
+			status, err := c.GetSiteCrawlJob(result.JobID)
+			if err != nil {
+				t.Fatalf("GetSiteCrawlJob: %v", err)
+			}
+			if status.JobID != result.JobID {
+				t.Fatalf("job id mismatch: %s != %s", status.JobID, result.JobID)
+			}
+			phaseOK := status.Phase == "scan" || status.Phase == "crawl" || status.Phase == "done"
+			if !phaseOK {
+				t.Fatalf("unexpected phase: %q", status.Phase)
+			}
+			if status.IsComplete() {
+				break
+			}
+			time.Sleep(3 * time.Second)
+		}
+	})
+
+	t.Run("include_without_markdown", func(t *testing.T) {
+		// include=[links] (no markdown) -> backend computes exclude_fields=[markdown]
+		result, err := c.CrawlSite("https://books.toscrape.com", &SiteCrawlOptions{
+			Criteria: "book listings",
+			MaxPages: 3,
+			Strategy: "http",
+			Include:  []string{"links"},
+		})
+		if err != nil {
+			t.Fatalf("CrawlSite include without markdown: %v", err)
+		}
+		if result.JobID == "" {
+			t.Fatal("expected job_id")
+		}
+	})
+}
+
+// =============================================================================
+// SCAN (AI-assisted)
+// =============================================================================
+
+func TestWrapperScan(t *testing.T) {
+	c := setupWrapper(t)
+
+	t.Run("basic_legacy", func(t *testing.T) {
+		// No criteria -> plain DomainMapper sync flow
+		result, err := c.Scan("https://crawl4ai.com", &ScanOptions{MaxUrls: 10})
+		if err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		if !result.Success {
+			t.Fatal("expected success")
+		}
+		if result.TotalUrls == 0 {
+			t.Fatal("expected total_urls > 0")
+		}
+		if result.Domain != "crawl4ai.com" {
+			t.Fatalf("unexpected domain: %q", result.Domain)
+		}
+	})
+
+	t.Run("with_criteria", func(t *testing.T) {
+		result, err := c.Scan("https://docs.crawl4ai.com", &ScanOptions{
+			Criteria: "API reference and core documentation pages",
+			MaxUrls:  20,
+		})
+		if err != nil {
+			t.Fatalf("Scan with criteria: %v", err)
+		}
+		if !result.Success {
+			t.Fatal("expected success")
+		}
+		if result.ModeUsed != "map" && result.ModeUsed != "deep" {
+			t.Fatalf("unexpected mode_used: %q", result.ModeUsed)
+		}
+		if result.GeneratedConfig == nil {
+			t.Fatal("expected generated_config when criteria is set")
+		}
+		if result.GeneratedConfig.Reasoning == "" {
+			t.Fatal("expected reasoning")
+		}
+	})
+
+	t.Run("with_scan_overrides", func(t *testing.T) {
+		result, err := c.Scan("https://docs.crawl4ai.com", &ScanOptions{
+			Criteria: "documentation pages",
+			Scan:     &SiteScanConfig{Patterns: []string{"*/core/*"}},
+			MaxUrls:  10,
+		})
+		if err != nil {
+			t.Fatalf("Scan with overrides: %v", err)
+		}
+		if !result.Success {
+			t.Fatal("expected success")
+		}
+		if result.ModeUsed != "map" {
+			t.Fatalf("expected map mode, got %q", result.ModeUsed)
+		}
+	})
+
+	t.Run("scan_config_struct", func(t *testing.T) {
+		cfg := &SiteScanConfig{Mode: "map", Patterns: []string{"*/docs/*"}}
+		result, err := c.Scan("https://docs.crawl4ai.com", &ScanOptions{
+			Scan:    cfg,
+			MaxUrls: 10,
+		})
+		if err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		if !result.Success {
+			t.Fatal("expected success")
+		}
+	})
+
+	t.Run("deep_mode_async", func(t *testing.T) {
+		maxDepth := 1
+		result, err := c.Scan("https://httpbin.org", &ScanOptions{
+			Scan:    &SiteScanConfig{Mode: "deep", MaxDepth: &maxDepth},
+			MaxUrls: 5,
+		})
+		if err != nil {
+			t.Fatalf("Scan deep: %v", err)
+		}
+		if !result.IsAsync() {
+			t.Fatalf("expected async response, got mode_used=%q job_id=%q", result.ModeUsed, result.JobID)
+		}
+		if result.JobID == "" {
+			t.Fatal("expected job_id for deep mode")
+		}
+		// Poll once
+		job, err := c.GetScanJob(result.JobID)
+		if err != nil {
+			t.Fatalf("GetScanJob: %v", err)
+		}
+		if job.JobID != result.JobID {
+			t.Fatalf("job id mismatch: %s != %s", job.JobID, result.JobID)
+		}
+		// Cancel so we don't hog worker slots
+		cancelled, err := c.CancelScanJob(result.JobID)
+		if err != nil {
+			t.Fatalf("CancelScanJob: %v", err)
+		}
+		if cancelled.JobID != result.JobID {
+			t.Fatalf("cancel job id mismatch")
+		}
+	})
 }
 
 // =============================================================================

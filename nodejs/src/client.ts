@@ -15,7 +15,7 @@ import {
   ErrorHeaders,
 } from './errors';
 
-const VERSION = '0.6.0';
+const VERSION = '0.6.1';
 const DEFAULT_BASE_URL = 'https://api.crawl4ai.com';
 const DEFAULT_TIMEOUT = 120000; // 120 seconds in ms
 const DEFAULT_MAX_RETRIES = 3;

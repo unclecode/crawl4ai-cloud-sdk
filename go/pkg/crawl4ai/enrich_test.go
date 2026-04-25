@@ -246,9 +246,14 @@ func TestEnrichV2_Review_PauseAndResume(t *testing.T) {
 		t.Fatalf("expected plan_intent usage bucket")
 	}
 
-	// Trim to one entity + one feature so the rest is fast
+	// Trim to one entity but keep 3 features so we're not flaky when a
+	// single page legitimately lacks one specific column.
 	editedEntities := []EnrichEntity{{Name: paused.PhaseData.Plan.Entities[0].Name}}
-	editedFeatures := []EnrichFeature{{Name: "address"}}
+	editedFeatures := []EnrichFeature{
+		{Name: "name", Description: "restaurant name"},
+		{Name: "address"},
+		{Name: "phone"},
+	}
 	resumed, err := c.ResumeEnrichJob(job.JobID, &ResumeEnrichOptions{
 		Entities: editedEntities,
 		Features: editedFeatures,
@@ -268,6 +273,38 @@ func TestEnrichV2_Review_PauseAndResume(t *testing.T) {
 	}
 	if len(final.PhaseData.Rows) > 1 {
 		t.Fatalf("expected ≤1 row after edit, got %d", len(final.PhaseData.Rows))
+	}
+
+	// AT LEAST ONE row should have populated fields — would have caught the
+	// worker P0 (features-not-plumbed) where the job completed but every
+	// row had Fields={}.
+	populated := 0
+	for _, r := range final.PhaseData.Rows {
+		if len(r.Fields) > 0 {
+			populated++
+		}
+	}
+	if populated == 0 && len(final.PhaseData.Rows) > 0 {
+		t.Fatalf("all %d rows have empty fields — likely a regression of features-not-plumbed",
+			len(final.PhaseData.Rows))
+	}
+
+	// ── tier + reason on URL candidates (added in 0.6.1) ──
+	// LLM rerank should have populated these on every URL that made it past
+	// the resolve phase.
+	for entity, urls := range final.PhaseData.URLsPerEntity {
+		for _, c := range urls {
+			if c.Tier == nil {
+				t.Errorf("missing Tier on URL %s/%s", entity, c.URL)
+				continue
+			}
+			if *c.Tier < 0.0 || *c.Tier > 1.0 {
+				t.Errorf("invalid Tier %f on %s/%s", *c.Tier, entity, c.URL)
+			}
+			if c.Reason == nil || *c.Reason == "" {
+				t.Errorf("missing Reason on URL %s/%s", entity, c.URL)
+			}
+		}
 	}
 }
 

@@ -165,9 +165,14 @@ describe('Enrich v2 — Review flow', () => {
     expect(paused.phaseData.plan!.features.length).toBeGreaterThanOrEqual(1);
     expect(paused.usage.llmTokensByPurpose.plan_intent).toBeDefined();
 
-    // Trim entities + features so the rest of the pipeline is fast
+    // Trim entities so we don't burn many crawls, but keep 3 features so
+    // we're not flaky if a single page legitimately lacks one column.
     const editedEntities = [{ name: paused.phaseData.plan!.entities[0].name }];
-    const editedFeatures = [{ name: 'address' }];
+    const editedFeatures = [
+      { name: 'name', description: 'restaurant name' },
+      { name: 'address' },
+      { name: 'phone' },
+    ];
     const resumed = await crawler.resumeEnrichJob(job.jobId, {
       entities: editedEntities,
       features: editedFeatures,
@@ -176,8 +181,31 @@ describe('Enrich v2 — Review flow', () => {
 
     const final = await crawler.waitEnrichJob(job.jobId, { timeout: 300 });
     expect(isEnrichJobComplete(final)).toBe(true);
-    if (final.phaseData.rows) {
-      expect(final.phaseData.rows.length).toBeLessThanOrEqual(1);
+
+    // Plan was edited → only one entity → at most one row
+    expect(final.phaseData.rows).toBeDefined();
+    expect(final.phaseData.rows!.length).toBeLessThanOrEqual(1);
+
+    // AT LEAST ONE row should have populated fields — would have caught the
+    // worker P0 (features-not-plumbed) where the job completed but every
+    // row had fields={}.
+    const populated = final.phaseData.rows!.filter(r => Object.keys(r.fields).length > 0);
+    expect(populated.length).toBeGreaterThan(0);
+
+    // ── tier + reason on URL candidates (added in 0.6.1) ──
+    // The LLM rerank should have populated these on every URL that made it
+    // past resolve. Skip the check if no URLs surfaced.
+    const upe = final.phaseData.urlsPerEntity ?? {};
+    for (const [entity, urls] of Object.entries(upe)) {
+      for (const c of urls) {
+        expect(c.tier).toBeDefined();
+        expect(typeof c.tier).toBe('number');
+        expect(c.tier!).toBeGreaterThanOrEqual(0);
+        expect(c.tier!).toBeLessThanOrEqual(1);
+        expect(c.reason).toBeDefined();
+        expect(typeof c.reason).toBe('string');
+        expect(c.reason!.length).toBeGreaterThan(0);
+      }
     }
   }, 420_000);
 });

@@ -1166,7 +1166,16 @@ export interface EnrichPlan {
   queriesUsed: string[];
 }
 
-/** One URL found for an entity by Serper grounding. */
+/**
+ * One URL found for an entity by Serper grounding.
+ *
+ * `tier` and `reason` are populated by the LLM rerank step (per-URL
+ * judgement of relevance + quality given the entity / criteria /
+ * features). Surface them in your URL-review UI instead of re-reasoning;
+ * quote `reason` verbatim when explaining a recommended drop. Both are
+ * undefined when the rerank didn't run (URL-mode jobs that skip URL
+ * resolution) or when it failed and we fell back to pass-through.
+ */
 export interface EnrichUrlCandidate {
   url: string;
   rank: number;
@@ -1174,6 +1183,8 @@ export interface EnrichUrlCandidate {
   title: string;
   queryUsed: string;
   requiresAuth: boolean;
+  tier?: number | null;
+  reason?: string | null;
 }
 
 /** One merged row in the enrichment table. */
@@ -1295,7 +1306,7 @@ function planFromDict(d: Record<string, unknown>): EnrichPlan {
 }
 
 function urlCandidateFromDict(d: Record<string, unknown>): EnrichUrlCandidate {
-  return {
+  const out: EnrichUrlCandidate = {
     url: (d.url || '') as string,
     rank: (d.rank || 0) as number,
     domainTier: (d.domain_tier ?? 0.5) as number,
@@ -1303,6 +1314,15 @@ function urlCandidateFromDict(d: Record<string, unknown>): EnrichUrlCandidate {
     queryUsed: (d.query_used || '') as string,
     requiresAuth: Boolean(d.requires_auth),
   };
+  // tier / reason are populated by the LLM URL-rerank step; absent in
+  // URL-mode jobs and on rerank failure pass-through.
+  if (d.tier !== null && d.tier !== undefined) {
+    out.tier = Number(d.tier);
+  }
+  if (d.reason !== null && d.reason !== undefined && d.reason !== '') {
+    out.reason = String(d.reason);
+  }
+  return out;
 }
 
 export function enrichRowFromDict(d: Record<string, unknown>): EnrichRow {

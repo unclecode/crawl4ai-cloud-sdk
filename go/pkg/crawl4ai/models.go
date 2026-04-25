@@ -922,13 +922,22 @@ type EnrichPlan struct {
 }
 
 // EnrichURLCandidate is one URL found for an entity by Serper grounding.
+//
+// Tier and Reason are populated by the LLM rerank step (per-URL judgement
+// of relevance + quality given the entity / criteria / features). Surface
+// them in your URL-review UI instead of re-reasoning; quote Reason
+// verbatim when explaining a recommended drop. Both nil when the rerank
+// didn't run (URL-mode jobs that skip URL resolution) or when it failed
+// and we fell back to pass-through.
 type EnrichURLCandidate struct {
-	URL          string  `json:"url"`
-	Rank         int     `json:"rank"`
-	DomainTier   float64 `json:"domain_tier"`
-	Title        string  `json:"title,omitempty"`
-	QueryUsed    string  `json:"query_used,omitempty"`
-	RequiresAuth bool    `json:"requires_auth,omitempty"`
+	URL          string   `json:"url"`
+	Rank         int      `json:"rank"`
+	DomainTier   float64  `json:"domain_tier"`
+	Title        string   `json:"title,omitempty"`
+	QueryUsed    string   `json:"query_used,omitempty"`
+	RequiresAuth bool     `json:"requires_auth,omitempty"`
+	Tier         *float64 `json:"tier,omitempty"`
+	Reason       *string  `json:"reason,omitempty"`
 }
 
 // EnrichRow is one merged row in the enrichment table.

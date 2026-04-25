@@ -1103,13 +1103,23 @@ class EnrichPlan:
 
 @dataclass
 class EnrichUrlCandidate:
-    """One URL found for an entity by Serper grounding."""
+    """One URL found for an entity by Serper grounding.
+
+    `tier` and `reason` are populated by the LLM rerank step (per-URL
+    judgement of relevance + quality given the entity / criteria /
+    features). Surface them in your URL-review UI instead of re-reasoning;
+    quote `reason` verbatim when explaining a recommended drop. Both are
+    None when the rerank didn't run (URL-mode jobs that skip URL
+    resolution) or when it failed and we fell back to pass-through.
+    """
     url: str = ""
     rank: int = 0
     domain_tier: float = 0.5
     title: str = ""
     query_used: str = ""
     requires_auth: bool = False
+    tier: Optional[float] = None
+    reason: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "EnrichUrlCandidate":
@@ -1120,6 +1130,8 @@ class EnrichUrlCandidate:
             title=data.get("title", ""),
             query_used=data.get("query_used", ""),
             requires_auth=bool(data.get("requires_auth", False)),
+            tier=(float(data["tier"]) if data.get("tier") is not None else None),
+            reason=data.get("reason"),
         )
 
 

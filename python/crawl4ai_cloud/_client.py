@@ -17,7 +17,7 @@ from .errors import (
     TimeoutError,
 )
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 
 DEFAULT_BASE_URL = "https://api.crawl4ai.com"
 DEFAULT_TIMEOUT = 120.0

@@ -183,10 +183,14 @@ class TestReviewFlow:
         # Plan-phase usage should be populated
         assert "plan_intent" in paused.usage.llm_tokens_by_purpose
 
-        # Resume with a single feature edit — drop everything to one column
-        # so the rest of the pipeline runs fast.
-        edited_features = [{"name": "address"}]
-        # Trim entities so we don't burn 10 crawls in tests
+        # Trim entities so we don't burn 10 crawls in tests, but keep
+        # multiple features so we're not at the mercy of a single page
+        # legitimately not having one specific column (data-noise → flaky).
+        edited_features = [
+            {"name": "name", "description": "restaurant name"},
+            {"name": "address"},
+            {"name": "phone"},
+        ]
         edited_entities = [{"name": plan.entities[0].name}]
         resumed = await crawler.resume_enrich_job(
             job.job_id,
@@ -200,8 +204,29 @@ class TestReviewFlow:
         final = await crawler.wait_enrich_job(job.job_id, timeout=300)
         assert final.is_complete
         # Plan was edited → only one entity → at most one row
-        if final.rows is not None:
-            assert len(final.rows) <= 1
+        assert final.rows is not None and len(final.rows) <= 1, \
+            f"expected ≤1 row, got {final.rows}"
+        # AT LEAST ONE row should have populated fields — would have caught
+        # the worker P0 (features-not-plumbed) where the job completed but
+        # every row had fields={}.
+        populated = [r for r in final.rows if r.fields]
+        assert populated, (
+            f"all {len(final.rows)} rows came back with empty fields — "
+            f"likely a regression of the features-not-plumbed bug. "
+            f"row[0].error={final.rows[0].error!r}"
+        )
+
+        # ── tier + reason on URL candidates (added in 0.6.1) ──
+        # The LLM rerank should have populated these on every URL that made
+        # it past the resolve phase. Skip the check if no URLs surfaced.
+        upe = final.urls_per_entity or {}
+        for entity, urls in upe.items():
+            for c in urls:
+                assert isinstance(c, EnrichUrlCandidate)
+                assert c.tier is not None and 0.0 <= c.tier <= 1.0, \
+                    f"missing/invalid tier for {entity}/{c.url}: {c.tier!r}"
+                assert c.reason and isinstance(c.reason, str), \
+                    f"missing reason for {entity}/{c.url}: {c.reason!r}"
 
 
 # ─── 4. SSE streaming ────────────────────────────────────────────────────

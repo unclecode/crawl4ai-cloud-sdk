@@ -2,6 +2,7 @@
 package crawl4ai
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -1096,144 +1097,83 @@ func (c *AsyncWebCrawler) waitSiteCrawlJob(jobID string, pollInterval, timeout t
 }
 
 // =========================================================================
-// Enrich API
+// Enrich v2 API (multi-phase)
 // =========================================================================
 
-// Enrich creates an enrichment job. Each URL becomes a row; the pipeline
-// crawls each URL, follows links to find missing fields, and optionally
-// searches Google. Always async -- set opts.Wait=true to block until done.
-func (c *AsyncWebCrawler) Enrich(urls []string, schema []EnrichFieldSpec, opts *EnrichOptions) (*EnrichJobStatus, error) {
+// Enrich creates a multi-phase enrichment job.
+//
+// Defaults AutoConfirmPlan and AutoConfirmURLs to true (set the pointer
+// fields to override) — the worker runs the full pipeline in one shot.
+// Set either to false for human-in-loop review and resume via
+// ResumeEnrichJob.
+//
+// Examples:
+//
+//	// Agent one-shot
+//	result, _ := crawler.Enrich(&crawl4ai.EnrichOptions{
+//	    Query:   "licensed nurseries in North York Toronto",
+//	    Country: "ca",
+//	    Wait:    true,
+//	})
+//	for _, row := range result.PhaseData.Rows {
+//	    fmt.Println(row.InputKey, row.Fields)
+//	}
+//
+//	// Pre-resolved URLs
+//	result, _ := crawler.Enrich(&crawl4ai.EnrichOptions{
+//	    URLs:     []string{"https://example.com/a", "https://example.com/b"},
+//	    Features: []crawl4ai.EnrichFeature{{Name: "price"}, {Name: "hours"}},
+//	    Wait:     true,
+//	})
+func (c *AsyncWebCrawler) Enrich(opts *EnrichOptions) (*EnrichJobStatus, error) {
 	if opts == nil {
 		opts = &EnrichOptions{}
 	}
+	body := buildEnrichRequest(opts)
 
-	maxDepth := opts.MaxDepth
-	if maxDepth == 0 {
-		maxDepth = 1
-	}
-	maxLinks := opts.MaxLinks
-	if maxLinks == 0 {
-		maxLinks = 5
-	}
-	retryCount := opts.RetryCount
-	if retryCount == 0 {
-		retryCount = 1
-	}
-	strategy := opts.Strategy
-	if strategy == "" {
-		strategy = "browser"
-	}
-	priority := opts.Priority
-	if priority == 0 {
-		priority = 5
-	}
-
-	// Build schema as []map to match the API shape
-	schemaList := make([]map[string]interface{}, len(schema))
-	for i, f := range schema {
-		m := map[string]interface{}{"name": f.Name}
-		if f.Description != "" {
-			m["description"] = f.Description
-		}
-		schemaList[i] = m
-	}
-
-	body := map[string]interface{}{
-		"urls":   urls,
-		"schema": schemaList,
-		"config": map[string]interface{}{
-			"max_depth":     maxDepth,
-			"max_links":     maxLinks,
-			"enable_search": opts.EnableSearch,
-			"retry_count":   retryCount,
-		},
-		"strategy": strategy,
-		"priority": priority,
-	}
-	if opts.LLMConfig != nil {
-		body["llm_config"] = opts.LLMConfig
-	}
-	if opts.Proxy != nil {
-		body["proxy"] = opts.Proxy
-	}
-	if opts.WebhookURL != "" {
-		body["webhook_url"] = opts.WebhookURL
-	}
-
-	data, err := c.http.Post("/v1/enrich", body, 0)
+	data, err := c.http.Post("/v1/enrich/async", body, 0)
 	if err != nil {
 		return nil, err
 	}
-
-	resp, err := unmarshalWrapper[EnrichResponse](data)
+	job, err := unmarshalEnrichJobStatus(data)
 	if err != nil {
 		return nil, err
 	}
 
 	if opts.Wait {
-		pollInterval := opts.PollInterval
-		if pollInterval == 0 {
-			pollInterval = 3 * time.Second
+		waitOpts := WaitEnrichOptions{
+			PollInterval: opts.PollInterval,
+			Timeout:      opts.Timeout,
 		}
-		return c.waitEnrichJob(resp.JobID, pollInterval, opts.Timeout)
+		return c.WaitEnrichJob(job.JobID, waitOpts)
 	}
-
-	// Return minimal status when not waiting
-	return &EnrichJobStatus{
-		JobID:     resp.JobID,
-		Status:    resp.Status,
-		CreatedAt: resp.CreatedAt,
-	}, nil
+	return job, nil
 }
 
-// GetEnrichJob polls an enrichment job for status and completed rows.
+// GetEnrichJob fetches the current status of an enrichment job — one poll, no wait.
 func (c *AsyncWebCrawler) GetEnrichJob(jobID string) (*EnrichJobStatus, error) {
 	data, err := c.http.Get(fmt.Sprintf("/v1/enrich/jobs/%s", jobID), nil)
 	if err != nil {
 		return nil, err
 	}
-	return unmarshalWrapper[EnrichJobStatus](data)
+	return unmarshalEnrichJobStatus(data)
 }
 
-// ListEnrichJobs lists enrichment jobs for the authenticated user.
-func (c *AsyncWebCrawler) ListEnrichJobs(limit, offset int) ([]*EnrichJobStatus, error) {
-	if limit == 0 {
-		limit = 20
-	}
-	params := map[string]string{
-		"limit":  fmt.Sprintf("%d", limit),
-		"offset": fmt.Sprintf("%d", offset),
-	}
-
-	data, err := c.http.Get("/v1/enrich/jobs", params)
-	if err != nil {
-		return nil, err
-	}
-
-	jobs := make([]*EnrichJobStatus, 0)
-	if rawJobs, ok := data["jobs"].([]interface{}); ok {
-		for _, j := range rawJobs {
-			if m, ok := j.(map[string]interface{}); ok {
-				job, err := unmarshalWrapper[EnrichJobStatus](m)
-				if err == nil {
-					jobs = append(jobs, job)
-				}
-			}
-		}
-	}
-	return jobs, nil
-}
-
-// CancelEnrichJob cancels an enrichment job.
-func (c *AsyncWebCrawler) CancelEnrichJob(jobID string) error {
-	_, err := c.http.Delete(fmt.Sprintf("/v1/enrich/jobs/%s", jobID))
-	return err
-}
-
-// waitEnrichJob polls /v1/enrich/jobs/{id} until the job finishes.
-func (c *AsyncWebCrawler) waitEnrichJob(jobID string, pollInterval, timeout time.Duration) (*EnrichJobStatus, error) {
+// WaitEnrichJob polls an enrichment job until it reaches opts.Until or a
+// terminal status. Defaults: PollInterval=3s, Timeout=10m, Until="" (any
+// terminal status).
+//
+// If Until is set and the job pauses at plan_ready or urls_ready without
+// auto-confirm, the paused state is returned immediately rather than
+// spinning until timeout.
+func (c *AsyncWebCrawler) WaitEnrichJob(jobID string, opts WaitEnrichOptions) (*EnrichJobStatus, error) {
+	pollInterval := opts.PollInterval
 	if pollInterval == 0 {
 		pollInterval = 3 * time.Second
+	}
+	timeout := opts.Timeout
+	if timeout == 0 {
+		timeout = 10 * time.Minute
 	}
 	start := time.Now()
 	for {
@@ -1244,14 +1184,260 @@ func (c *AsyncWebCrawler) waitEnrichJob(jobID string, pollInterval, timeout time
 		if job.IsComplete() {
 			return job, nil
 		}
-		if timeout > 0 && time.Since(start) > timeout {
+		if opts.Until != "" && job.Status == opts.Until {
+			return job, nil
+		}
+		if opts.Until != "" && job.IsPaused() {
+			if (job.Status == EnrichStatusPlanReady && !job.AutoConfirmPlan) ||
+				(job.Status == EnrichStatusURLsReady && !job.AutoConfirmURLs) {
+				return job, nil
+			}
+		}
+		if time.Since(start) > timeout {
+			until := opts.Until
+			if until == "" {
+				until = "completed"
+			}
 			return nil, NewTimeoutError(fmt.Sprintf(
-				"enrich job %s did not complete within %v. Status: %s, progress: %d/%d",
-				jobID, timeout, job.Status, job.Progress.Completed, job.Progress.Total,
+				"enrich job %s did not reach %q within %v. Status: %s, progress: %d/%d",
+				jobID, until, timeout, job.Status, job.Progress.CompletedURLs, job.Progress.TotalURLs,
 			))
 		}
 		time.Sleep(pollInterval)
 	}
+}
+
+// ResumeEnrichJob advances a paused job (plan_ready or urls_ready) to the next phase.
+//
+// Pass nil to resume with the server's current values. At plan_ready: edit
+// Entities/Criteria/Features. At urls_ready: edit Groups.
+func (c *AsyncWebCrawler) ResumeEnrichJob(jobID string, opts *ResumeEnrichOptions) (*EnrichJobStatus, error) {
+	body := map[string]interface{}{}
+	if opts != nil {
+		if opts.Entities != nil {
+			body["entities"] = opts.Entities
+		}
+		if opts.Criteria != nil {
+			body["criteria"] = opts.Criteria
+		}
+		if opts.Features != nil {
+			body["features"] = opts.Features
+		}
+		if opts.Groups != nil {
+			body["groups"] = opts.Groups
+		}
+	}
+	data, err := c.http.Post(fmt.Sprintf("/v1/enrich/jobs/%s/continue", jobID), body, 0)
+	if err != nil {
+		return nil, err
+	}
+	return unmarshalEnrichJobStatus(data)
+}
+
+// StreamEnrichJob opens an SSE stream for an enrichment job. Events arrive
+// on the returned channel until the server sends "complete" or the context
+// is cancelled.
+func (c *AsyncWebCrawler) StreamEnrichJob(ctx context.Context, jobID string) (<-chan EnrichEvent, error) {
+	raw, err := c.http.StreamSse(ctx, fmt.Sprintf("/v1/enrich/jobs/%s/stream", jobID), nil)
+	if err != nil {
+		return nil, err
+	}
+	out := make(chan EnrichEvent, 16)
+	go func() {
+		defer close(out)
+		for sse := range raw {
+			if sse.Err != nil {
+				// Stream broke — surface as a final event with empty type
+				select {
+				case out <- EnrichEvent{Type: "", Raw: map[string]interface{}{"error": sse.Err.Error()}}:
+				case <-ctx.Done():
+				}
+				return
+			}
+			evt := decodeEnrichEvent(sse.Event, sse.Data)
+			select {
+			case out <- evt:
+			case <-ctx.Done():
+				return
+			}
+			if evt.Type == "complete" {
+				return
+			}
+		}
+	}()
+	return out, nil
+}
+
+// CancelEnrichJob cancels a running enrichment job.
+func (c *AsyncWebCrawler) CancelEnrichJob(jobID string) error {
+	_, err := c.http.Delete(fmt.Sprintf("/v1/enrich/jobs/%s", jobID))
+	return err
+}
+
+// ListEnrichJobs lists enrichment jobs for the authenticated user.
+func (c *AsyncWebCrawler) ListEnrichJobs(limit, offset int) ([]*EnrichJobListItem, error) {
+	if limit == 0 {
+		limit = 20
+	}
+	params := map[string]string{
+		"limit":  fmt.Sprintf("%d", limit),
+		"offset": fmt.Sprintf("%d", offset),
+	}
+	data, err := c.http.Get("/v1/enrich/jobs", params)
+	if err != nil {
+		return nil, err
+	}
+	jobs := make([]*EnrichJobListItem, 0)
+	if rawJobs, ok := data["jobs"].([]interface{}); ok {
+		for _, j := range rawJobs {
+			if m, ok := j.(map[string]interface{}); ok {
+				item, err := unmarshalEnrichJobListItem(m)
+				if err == nil {
+					jobs = append(jobs, item)
+				}
+			}
+		}
+	}
+	return jobs, nil
+}
+
+// ─── Internal helpers (kept here to match how other services serialise) ───
+
+func buildEnrichRequest(o *EnrichOptions) map[string]interface{} {
+	autoPlan := true
+	if o.AutoConfirmPlan != nil {
+		autoPlan = *o.AutoConfirmPlan
+	}
+	autoURLs := true
+	if o.AutoConfirmURLs != nil {
+		autoURLs = *o.AutoConfirmURLs
+	}
+	topK := o.TopKPerEntity
+	if topK == 0 {
+		topK = 3
+	}
+	search := true
+	if o.Search != nil {
+		search = *o.Search
+	}
+	strategy := o.Strategy
+	if strategy == "" {
+		strategy = "http"
+	}
+	priority := o.Priority
+	if priority == 0 {
+		priority = 5
+	}
+
+	body := map[string]interface{}{
+		"auto_confirm_plan": autoPlan,
+		"auto_confirm_urls": autoURLs,
+		"top_k_per_entity":  topK,
+		"search":            search,
+		"strategy":          strategy,
+		"priority":          priority,
+	}
+	if o.Query != "" {
+		body["query"] = o.Query
+	}
+	if o.Entities != nil {
+		body["entities"] = o.Entities
+	}
+	if o.Criteria != nil {
+		body["criteria"] = o.Criteria
+	}
+	if o.Features != nil {
+		body["features"] = o.Features
+	}
+	if o.URLs != nil {
+		body["urls"] = o.URLs
+	}
+	if o.Groups != nil {
+		body["groups"] = o.Groups
+	}
+	if o.Country != "" {
+		body["country"] = o.Country
+	}
+	if o.LocationHint != "" {
+		body["location_hint"] = o.LocationHint
+	}
+	if o.Config != nil {
+		body["config"] = o.Config
+	}
+	if o.BrowserConfig != nil {
+		body["browser_config"] = o.BrowserConfig
+	}
+	if o.CrawlerConfig != nil {
+		body["crawler_config"] = o.CrawlerConfig
+	}
+	if o.LLMConfig != nil {
+		body["llm_config"] = o.LLMConfig
+	}
+	if o.Proxy != nil {
+		body["proxy"] = o.Proxy
+	}
+	if o.WebhookURL != "" {
+		body["webhook_url"] = o.WebhookURL
+	}
+	return body
+}
+
+// unmarshalEnrichJobStatus round-trips through JSON so nested heterogeneous
+// fields (like sources / certainty maps) preserve their typed shapes.
+func unmarshalEnrichJobStatus(m map[string]interface{}) (*EnrichJobStatus, error) {
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return nil, NewCloudError(fmt.Sprintf("marshal enrich status: %v", err), 0, nil, nil)
+	}
+	out := &EnrichJobStatus{}
+	if err := json.Unmarshal(raw, out); err != nil {
+		return nil, NewCloudError(fmt.Sprintf("unmarshal enrich status: %v", err), 0, nil, nil)
+	}
+	// Sane defaults when the server omits the auto_confirm fields entirely
+	if _, ok := m["auto_confirm_plan"]; !ok {
+		out.AutoConfirmPlan = true
+	}
+	if _, ok := m["auto_confirm_urls"]; !ok {
+		out.AutoConfirmURLs = true
+	}
+	return out, nil
+}
+
+func unmarshalEnrichJobListItem(m map[string]interface{}) (*EnrichJobListItem, error) {
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return nil, NewCloudError(fmt.Sprintf("marshal list item: %v", err), 0, nil, nil)
+	}
+	out := &EnrichJobListItem{}
+	if err := json.Unmarshal(raw, out); err != nil {
+		return nil, NewCloudError(fmt.Sprintf("unmarshal list item: %v", err), 0, nil, nil)
+	}
+	return out, nil
+}
+
+func decodeEnrichEvent(name string, payload map[string]interface{}) EnrichEvent {
+	out := EnrichEvent{Type: name, Raw: payload}
+	if name == "snapshot" {
+		if snap, err := unmarshalEnrichJobStatus(payload); err == nil {
+			out.Snapshot = snap
+		}
+	}
+	if s, ok := payload["status"].(string); ok {
+		out.Status = s
+	}
+	if rowMap, ok := payload["row"].(map[string]interface{}); ok {
+		raw, err := json.Marshal(rowMap)
+		if err == nil {
+			row := &EnrichRow{}
+			if err := json.Unmarshal(raw, row); err == nil {
+				out.Row = row
+			}
+		}
+	}
+	if frag, ok := payload["fragment"].(map[string]interface{}); ok {
+		out.Fragment = frag
+	}
+	return out
 }
 
 // ---- Wrapper job management ----

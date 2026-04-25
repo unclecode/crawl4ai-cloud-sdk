@@ -15,7 +15,7 @@ import {
   ErrorHeaders,
 } from './errors';
 
-const VERSION = '0.1.0';
+const VERSION = '0.6.0';
 const DEFAULT_BASE_URL = 'https://api.crawl4ai.com';
 const DEFAULT_TIMEOUT = 120000; // 120 seconds in ms
 const DEFAULT_MAX_RETRIES = 3;
@@ -224,5 +224,88 @@ export class HTTPClient {
     params?: Record<string, string | number | boolean>
   ): Promise<Record<string, unknown>> {
     return this.request(path, { method: 'DELETE', params });
+  }
+
+  /**
+   * Open an SSE connection and yield [eventName, parsedData] pairs.
+   *
+   * Skips heartbeat comments (lines starting with ':'). Stops when the server
+   * closes the connection.
+   */
+  async *streamSse(
+    path: string,
+    params?: Record<string, string | number | boolean>,
+  ): AsyncGenerator<[string, Record<string, unknown>]> {
+    const url = this.buildUrl(path, params);
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'X-API-Key': this.apiKey,
+        'Accept': 'text/event-stream',
+        'User-Agent': `crawl4ai-cloud/${VERSION}`,
+      },
+      // No timeout — let the server keep the stream open as long as needed.
+    });
+
+    if (response.status >= 400) {
+      const detail = (await response.text()) || `HTTP ${response.status}`;
+      const headers = this.parseHeaders(response);
+      switch (response.status) {
+        case 401: throw new AuthenticationError(detail, 401, {}, headers);
+        case 404: throw new NotFoundError(detail, 404, {}, headers);
+        default:  throw new CloudError(detail, response.status, {}, headers);
+      }
+    }
+    if (!response.body) {
+      throw new CloudError('SSE response had no body', response.status, {}, {});
+    }
+
+    let buffer = '';
+    let eventName: string | null = null;
+    const dataLines: string[] = [];
+
+    const dispatch = (): [string, Record<string, unknown>] | null => {
+      if (dataLines.length === 0) {
+        eventName = null;
+        return null;
+      }
+      const raw = dataLines.join('\n');
+      const name = eventName ?? 'message';
+      eventName = null;
+      dataLines.length = 0;
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(raw) as Record<string, unknown>;
+      } catch {
+        parsed = { raw };
+      }
+      return [name, parsed];
+    };
+
+    for await (const chunk of response.body) {
+      buffer += typeof chunk === 'string'
+        ? chunk
+        : Buffer.from(chunk).toString('utf-8');
+      let idx: number;
+      while ((idx = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, idx).replace(/\r$/, '');
+        buffer = buffer.slice(idx + 1);
+        if (line === '') {
+          const evt = dispatch();
+          if (evt) yield evt;
+          continue;
+        }
+        if (line.startsWith(':')) continue;          // SSE comment / heartbeat
+        if (line.startsWith('event:')) {
+          eventName = line.slice(6).trim();
+        } else if (line.startsWith('data:')) {
+          dataLines.push(line.slice(5).replace(/^ /, ''));
+        }
+        // Other SSE fields (id, retry) are intentionally ignored.
+      }
+    }
+    // Flush any tail event without a terminating blank line
+    const last = dispatch();
+    if (last) yield last;
   }
 }

@@ -841,114 +841,265 @@ func GeneratedSchemaFromMap(data map[string]interface{}) *GeneratedSchema {
 // Enrich API Models
 // =============================================================================
 
-// EnrichFieldSpec describes a field to extract during enrichment.
-type EnrichFieldSpec struct {
+// =============================================================================
+// Enrich v2 — multi-phase API
+// =============================================================================
+//
+// Phase machine:
+//
+//   queued → planning → plan_ready → resolving_urls → urls_ready
+//          → extracting → merging → completed | partial | failed | cancelled
+//
+// Defaults AutoConfirmPlan=true and AutoConfirmUrls=true make jobs run
+// straight through. Set either to false to pause for review and resume via
+// crawler.ResumeEnrichJob(...).
+
+// EnrichStatus is the union of phase + terminal statuses for a job.
+type EnrichStatus = string
+
+// Status constants — use these instead of bare strings.
+const (
+	EnrichStatusQueued        EnrichStatus = "queued"
+	EnrichStatusPlanning      EnrichStatus = "planning"
+	EnrichStatusPlanReady     EnrichStatus = "plan_ready"
+	EnrichStatusResolvingURLs EnrichStatus = "resolving_urls"
+	EnrichStatusURLsReady     EnrichStatus = "urls_ready"
+	EnrichStatusExtracting    EnrichStatus = "extracting"
+	EnrichStatusMerging       EnrichStatus = "merging"
+	EnrichStatusCompleted     EnrichStatus = "completed"
+	EnrichStatusPartial       EnrichStatus = "partial"
+	EnrichStatusFailed        EnrichStatus = "failed"
+	EnrichStatusCancelled     EnrichStatus = "cancelled"
+)
+
+// EnrichTerminalStatuses lists statuses where the job has stopped advancing.
+var EnrichTerminalStatuses = []EnrichStatus{
+	EnrichStatusCompleted, EnrichStatusPartial,
+	EnrichStatusFailed, EnrichStatusCancelled,
+}
+
+// EnrichPausedStatuses lists statuses that require /continue to advance.
+var EnrichPausedStatuses = []EnrichStatus{
+	EnrichStatusPlanReady, EnrichStatusURLsReady,
+}
+
+// EnrichEntity is one row identifier (specific proper noun).
+type EnrichEntity struct {
+	Name      string `json:"name"`
+	Title     string `json:"title,omitempty"`
+	SourceURL string `json:"source_url,omitempty"`
+}
+
+// EnrichCriterion is a search-side filter used when finding URLs per entity.
+type EnrichCriterion struct {
+	Text string `json:"text"`
+	Kind string `json:"kind,omitempty"` // "location" | "filter" | "other"
+}
+
+// EnrichFeature is one extraction column — a field pulled off each crawled page.
+type EnrichFeature struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 }
 
 // EnrichConfig configures enrichment crawl behavior.
 type EnrichConfig struct {
-	MaxDepth     int  `json:"max_depth"`
-	MaxLinks     int  `json:"max_links"`
-	EnableSearch bool `json:"enable_search"`
-	RetryCount   int  `json:"retry_count"`
+	MaxDepth          int  `json:"max_depth,omitempty"`
+	MaxLinks          int  `json:"max_links,omitempty"`
+	EnableSearch      bool `json:"enable_search,omitempty"`
+	RetryCount        int  `json:"retry_count,omitempty"`
+	KeysTopK          int  `json:"keys_top_k,omitempty"`
+	CrossSourceVerify bool `json:"cross_source_verify,omitempty"`
 }
 
-// EnrichFieldSource is source attribution for a single enriched field.
-type EnrichFieldSource struct {
-	URL    string `json:"url"`
-	Method string `json:"method"` // "direct", "depth", "search"
+// EnrichPlan is the LLM-expanded plan for a query.
+type EnrichPlan struct {
+	Entities         []EnrichEntity    `json:"entities"`
+	Criteria         []EnrichCriterion `json:"criteria"`
+	Features         []EnrichFeature   `json:"features"`
+	AssistantMessage string            `json:"assistant_message,omitempty"`
+	QueriesUsed      []string          `json:"queries_used,omitempty"`
 }
 
-// EnrichSearchCitation is a citation for a field found via search fallback.
-type EnrichSearchCitation struct {
-	Field       string `json:"field"`
-	SourceURL   string `json:"source_url"`
-	SourceTitle string `json:"source_title"`
-	QueryUsed   string `json:"query_used"`
+// EnrichURLCandidate is one URL found for an entity by Serper grounding.
+type EnrichURLCandidate struct {
+	URL          string  `json:"url"`
+	Rank         int     `json:"rank"`
+	DomainTier   float64 `json:"domain_tier"`
+	Title        string  `json:"title,omitempty"`
+	QueryUsed    string  `json:"query_used,omitempty"`
+	RequiresAuth bool    `json:"requires_auth,omitempty"`
 }
 
-// EnrichRow is the result for a single URL in an enrichment job.
+// EnrichRow is one merged row in the enrichment table.
 type EnrichRow struct {
-	URL              string                        `json:"url"`
-	Fields           map[string]interface{}         `json:"fields"`
-	Missing          []string                       `json:"missing"`
-	Sources          map[string]EnrichFieldSource   `json:"sources"`
-	SearchCitations  []EnrichSearchCitation         `json:"search_citations"`
-	Status           string                         `json:"status"` // "complete", "partial", "failed", "pending"
-	DepthUsed        int                            `json:"depth_used"`
-	SearchUsed       bool                           `json:"search_used"`
-	TokenUsage       map[string]int                 `json:"token_usage,omitempty"`
-	DurationMs       int                            `json:"duration_ms"`
-	Error            string                         `json:"error,omitempty"`
+	GroupID       string                            `json:"group_id"`
+	InputKey      *string                           `json:"input_key,omitempty"`
+	URL           *string                           `json:"url,omitempty"`
+	Fields        map[string]interface{}            `json:"fields"`
+	Sources       map[string]map[string]interface{} `json:"sources,omitempty"`
+	Certainty     map[string]float64                `json:"certainty,omitempty"`
+	Disputed      []string                          `json:"disputed,omitempty"`
+	FragmentsUsed int                               `json:"fragments_used,omitempty"`
+	Status        string                            `json:"status"` // "complete" | "partial" | "failed"
+	Error         string                            `json:"error,omitempty"`
 }
 
-// EnrichJobProgress represents progress of an enrichment job.
-type EnrichJobProgress struct {
-	Total     int `json:"total"`
-	Completed int `json:"completed"`
-	Failed    int `json:"failed"`
+// EnrichPhaseData holds the per-phase payload — fields appear as their phase completes.
+type EnrichPhaseData struct {
+	Plan          *EnrichPlan                      `json:"plan,omitempty"`
+	URLsPerEntity map[string][]EnrichURLCandidate  `json:"urls_per_entity,omitempty"`
+	Fragments     []map[string]interface{}         `json:"fragments,omitempty"`
+	Rows          []EnrichRow                      `json:"rows,omitempty"`
 }
 
-// Percent returns the completion percentage.
-func (p *EnrichJobProgress) Percent() int {
-	if p.Total == 0 {
+// EnrichProgress is URL- and group-level progress during extraction + merge.
+type EnrichProgress struct {
+	TotalURLs       int `json:"total_urls"`
+	CompletedURLs   int `json:"completed_urls"`
+	FailedURLs      int `json:"failed_urls"`
+	TotalGroups     int `json:"total_groups"`
+	CompletedGroups int `json:"completed_groups"`
+}
+
+// Percent returns 0–100 based on URL completion.
+func (p *EnrichProgress) Percent() int {
+	if p.TotalURLs == 0 {
 		return 0
 	}
-	return int(float64(p.Completed+p.Failed) / float64(p.Total) * 100)
+	return int(float64(p.CompletedURLs+p.FailedURLs) / float64(p.TotalURLs) * 100)
 }
 
-// EnrichResponse is the response from POST /v1/enrich.
-type EnrichResponse struct {
-	JobID        string `json:"job_id"`
-	Status       string `json:"status"`
-	URLsCount    int    `json:"urls_count"`
-	SchemaFields int    `json:"schema_fields"`
-	CreatedAt    string `json:"created_at"`
+// EnrichLlmBucket is LLM token usage for one purpose.
+type EnrichLlmBucket struct {
+	Input  int    `json:"input"`
+	Output int    `json:"output"`
+	Model  string `json:"model,omitempty"`
 }
 
-// EnrichJobStatus is the polling response for GET /v1/enrich/jobs/{job_id}.
+// EnrichUsage is the per-purpose usage envelope.
+type EnrichUsage struct {
+	Crawls             int                        `json:"crawls"`
+	Searches           int                        `json:"searches"`
+	LlmTokensByPurpose map[string]EnrichLlmBucket `json:"llm_tokens_by_purpose"`
+	LlmTotals          map[string]int             `json:"llm_totals"`
+}
+
+// EnrichJobStatus is returned from POST /v1/enrich/async and GET /v1/enrich/jobs/{id}.
 type EnrichJobStatus struct {
-	JobID           string             `json:"job_id"`
-	Status          string             `json:"status"`
-	Progress        EnrichJobProgress  `json:"progress"`
-	ProgressPercent int                `json:"progress_percent"`
-	Rows            []EnrichRow        `json:"rows,omitempty"`
-	CreatedAt       string             `json:"created_at,omitempty"`
-	StartedAt       string             `json:"started_at,omitempty"`
-	CompletedAt     string             `json:"completed_at,omitempty"`
-	Error           string             `json:"error,omitempty"`
+	JobID            string          `json:"job_id"`
+	Status           EnrichStatus    `json:"status"`
+	PhaseData        EnrichPhaseData `json:"phase_data"`
+	Progress         EnrichProgress  `json:"progress"`
+	Usage            EnrichUsage     `json:"usage"`
+	AutoConfirmPlan  bool            `json:"auto_confirm_plan"`
+	AutoConfirmURLs  bool            `json:"auto_confirm_urls"`
+	CreatedAt        string          `json:"created_at,omitempty"`
+	StartedAt        string          `json:"started_at,omitempty"`
+	PausedAt         string          `json:"paused_at,omitempty"`
+	CompletedAt      string          `json:"completed_at,omitempty"`
+	Error            string          `json:"error,omitempty"`
 }
 
 // IsComplete returns true when the enrichment job is in a terminal state.
 func (j *EnrichJobStatus) IsComplete() bool {
-	switch j.Status {
-	case "completed", "partial", "failed", "cancelled":
-		return true
+	for _, s := range EnrichTerminalStatuses {
+		if j.Status == s {
+			return true
+		}
+	}
+	return false
+}
+
+// IsPaused returns true when the job is at plan_ready or urls_ready.
+func (j *EnrichJobStatus) IsPaused() bool {
+	for _, s := range EnrichPausedStatuses {
+		if j.Status == s {
+			return true
+		}
 	}
 	return false
 }
 
 // IsSuccessful returns true when the enrichment job completed with usable results.
 func (j *EnrichJobStatus) IsSuccessful() bool {
-	return j.Status == "completed" || j.Status == "partial"
+	return j.Status == EnrichStatusCompleted || j.Status == EnrichStatusPartial
 }
 
-// EnrichOptions configures an enrichment request.
+// EnrichJobListItem is one row in the GET /v1/enrich/jobs list response.
+type EnrichJobListItem struct {
+	JobID         string       `json:"job_id"`
+	Status        EnrichStatus `json:"status"`
+	QueryPreview  string       `json:"query_preview,omitempty"`
+	CreatedAt     string       `json:"created_at,omitempty"`
+	CompletedAt   string       `json:"completed_at,omitempty"`
+}
+
+// EnrichOptions configures POST /v1/enrich/async.
+//
+// At least one of Query, Entities, or URLs must be set.
 type EnrichOptions struct {
-	MaxDepth     int                    `json:"-"`
-	MaxLinks     int                    `json:"-"`
-	EnableSearch bool                   `json:"-"`
-	RetryCount   int                    `json:"-"`
-	Strategy     string                 `json:"-"` // "browser" or "http"
-	LLMConfig    map[string]interface{} `json:"-"`
-	Proxy        map[string]interface{} `json:"-"`
-	WebhookURL   string                 `json:"-"`
-	Priority     int                    `json:"-"`
-	Wait         bool                   `json:"-"`
-	PollInterval time.Duration          `json:"-"`
-	Timeout      time.Duration          `json:"-"`
+	// Inputs
+	Query    string                 `json:"-"`
+	Entities []EnrichEntity         `json:"-"`
+	Criteria []EnrichCriterion      `json:"-"`
+	Features []EnrichFeature        `json:"-"`
+	URLs     []string               `json:"-"`
+	Groups   map[string][]string    `json:"-"`
+
+	// Phase control — both default true (one-shot mode).
+	AutoConfirmPlan *bool `json:"-"`
+	AutoConfirmURLs *bool `json:"-"`
+
+	// Discover knobs
+	TopKPerEntity int    `json:"-"` // default 3
+	Search        *bool  `json:"-"` // default true
+	Country       string `json:"-"`
+	LocationHint  string `json:"-"`
+
+	// Standard wrapper knobs
+	Strategy      string                 `json:"-"` // "http" (default) or "browser"
+	Config        map[string]interface{} `json:"-"`
+	BrowserConfig map[string]interface{} `json:"-"`
+	CrawlerConfig map[string]interface{} `json:"-"`
+	LLMConfig     map[string]interface{} `json:"-"`
+	Proxy         map[string]interface{} `json:"-"`
+	WebhookURL    string                 `json:"-"`
+	Priority      int                    `json:"-"`
+
+	// Polling
+	Wait         bool          `json:"-"`
+	PollInterval time.Duration `json:"-"`
+	Timeout      time.Duration `json:"-"`
+}
+
+// ResumeEnrichOptions are edits applied on POST /v1/enrich/jobs/{id}/continue.
+//
+// Pass nil/empty to resume with the server's current values.
+type ResumeEnrichOptions struct {
+	Entities []EnrichEntity         `json:"-"`
+	Criteria []EnrichCriterion      `json:"-"`
+	Features []EnrichFeature        `json:"-"`
+	Groups   map[string][]string    `json:"-"`
+}
+
+// WaitEnrichOptions controls WaitEnrichJob.
+type WaitEnrichOptions struct {
+	Until        EnrichStatus  // empty → wait for any terminal status
+	PollInterval time.Duration // default 3s
+	Timeout      time.Duration // default 10m
+}
+
+// EnrichEvent is one Server-Sent Event from StreamEnrichJob.
+//
+// Type is one of "snapshot", "phase", "fragment", "row", "complete".
+type EnrichEvent struct {
+	Type     string                 // event name from the server
+	Status   EnrichStatus           // populated on phase/complete events
+	Snapshot *EnrichJobStatus       // populated on snapshot events
+	Fragment map[string]interface{} // populated on fragment events
+	Row      *EnrichRow             // populated on row events
+	Raw      map[string]interface{} // unparsed payload, always set
 }
 
 // =============================================================================

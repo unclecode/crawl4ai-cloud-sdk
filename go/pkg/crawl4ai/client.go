@@ -1,7 +1,9 @@
 package crawl4ai
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,7 +16,7 @@ import (
 
 const (
 	// Version is the SDK version.
-	Version = "0.5.0"
+	Version = "0.6.0"
 
 	// DefaultBaseURL is the default API base URL.
 	DefaultBaseURL = "https://api.crawl4ai.com"
@@ -263,4 +265,142 @@ func (c *HTTPClient) Delete(path string) (map[string]interface{}, error) {
 		Method: "DELETE",
 		Path:   path,
 	})
+}
+
+// SseEvent is one parsed Server-Sent Event from StreamSse.
+type SseEvent struct {
+	Event string                 // "message" if no event: line was set
+	Data  map[string]interface{} // parsed JSON payload (or {"raw": <string>} on parse failure)
+	Err   error                  // non-nil on stream error; channel closes after delivery
+}
+
+// StreamSse opens an SSE connection and pushes events on the returned channel.
+// The channel closes when the server ends the stream, the context is cancelled,
+// or an error occurs (the final SseEvent will carry Err in that case).
+//
+// Heartbeat comments (lines starting with ':') are skipped.
+func (c *HTTPClient) StreamSse(ctx context.Context, path string, params map[string]string) (<-chan SseEvent, error) {
+	out := make(chan SseEvent, 16)
+
+	u, err := url.Parse(c.baseURL + path)
+	if err != nil {
+		close(out)
+		return out, NewCloudError(fmt.Sprintf("invalid SSE path: %v", err), 0, nil, nil)
+	}
+	if len(params) > 0 {
+		q := u.Query()
+		for k, v := range params {
+			q.Set(k, v)
+		}
+		u.RawQuery = q.Encode()
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
+	if err != nil {
+		close(out)
+		return out, NewCloudError(fmt.Sprintf("build SSE request: %v", err), 0, nil, nil)
+	}
+	req.Header.Set("X-API-Key", c.apiKey)
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("User-Agent", fmt.Sprintf("crawl4ai-cloud/%s", Version))
+
+	// Use a separate http.Client with no read timeout — SSE streams are open-ended.
+	streamClient := &http.Client{}
+	resp, err := streamClient.Do(req)
+	if err != nil {
+		close(out)
+		return out, NewCloudError(fmt.Sprintf("SSE connect: %v", err), 0, nil, nil)
+	}
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		close(out)
+		detail := string(body)
+		if detail == "" {
+			detail = fmt.Sprintf("HTTP %d", resp.StatusCode)
+		}
+		switch resp.StatusCode {
+		case 401:
+			return out, NewAuthenticationError(detail, nil, nil)
+		case 404:
+			return out, NewNotFoundError(detail, nil, nil)
+		default:
+			return out, NewCloudError(detail, resp.StatusCode, nil, nil)
+		}
+	}
+
+	go func() {
+		defer close(out)
+		defer resp.Body.Close()
+
+		reader := bufio.NewReader(resp.Body)
+		var eventName string
+		var dataLines []string
+
+		dispatch := func() {
+			if len(dataLines) == 0 {
+				eventName = ""
+				return
+			}
+			raw := strings.Join(dataLines, "\n")
+			name := eventName
+			if name == "" {
+				name = "message"
+			}
+			var parsed map[string]interface{}
+			if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+				parsed = map[string]interface{}{"raw": raw}
+			}
+			select {
+			case out <- SseEvent{Event: name, Data: parsed}:
+			case <-ctx.Done():
+			}
+			eventName = ""
+			dataLines = dataLines[:0]
+		}
+
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				if err == io.EOF {
+					if line != "" {
+						// Process any trailing partial line, then flush the buffered event
+						processSseLine(strings.TrimRight(line, "\r\n"), &eventName, &dataLines)
+					}
+					dispatch()
+					return
+				}
+				out <- SseEvent{Err: err}
+				return
+			}
+			line = strings.TrimRight(line, "\r\n")
+			if line == "" {
+				dispatch()
+				continue
+			}
+			processSseLine(line, &eventName, &dataLines)
+		}
+	}()
+
+	return out, nil
+}
+
+// processSseLine appends a single SSE line into the in-progress event buffer.
+// Heartbeat comments and unrecognised fields are ignored.
+func processSseLine(line string, eventName *string, dataLines *[]string) {
+	if strings.HasPrefix(line, ":") {
+		return // SSE comment / heartbeat
+	}
+	if strings.HasPrefix(line, "event:") {
+		*eventName = strings.TrimSpace(line[6:])
+	} else if strings.HasPrefix(line, "data:") {
+		data := line[5:]
+		if strings.HasPrefix(data, " ") {
+			data = data[1:]
+		}
+		*dataLines = append(*dataLines, data)
+	}
 }

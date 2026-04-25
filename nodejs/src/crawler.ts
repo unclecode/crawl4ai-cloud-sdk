@@ -56,11 +56,18 @@ import {
   isSiteCrawlJobComplete,
   wrapperJobFromDict,
   isWrapperJobComplete,
-  EnrichResponse,
   EnrichJobStatus,
-  enrichResponseFromDict,
+  EnrichJobListItem,
+  EnrichEntity,
+  EnrichCriterion,
+  EnrichFeature,
+  EnrichEvent,
+  EnrichStatus,
   enrichJobStatusFromDict,
+  enrichJobListItemFromDict,
+  enrichEventFromDict,
   isEnrichJobComplete,
+  ENRICH_PAUSED_STATUSES,
 } from './models';
 import {
   CrawlerRunConfig,
@@ -124,6 +131,83 @@ export interface DeepCrawlOptions {
   // URL filtering shortcuts
   includePatterns?: string[];
   excludePatterns?: string[];
+}
+
+/**
+ * Options for `crawler.enrich(...)` — multi-phase enrichment job.
+ *
+ * Pass any subset of `query`, `entities`, or `urls` (at least one required).
+ * Strings in `entities` / `criteria` / `features` are auto-wrapped as
+ * `{name: str}` / `{text: str}`.
+ */
+export interface EnrichOptions {
+  // Inputs
+  query?: string;
+  entities?: Array<string | EnrichEntity>;
+  criteria?: Array<string | EnrichCriterion>;
+  features?: Array<string | EnrichFeature>;
+  urls?: string[];
+  groups?: Record<string, string[]>;
+  // Phase control
+  autoConfirmPlan?: boolean;
+  autoConfirmUrls?: boolean;
+  // Discover knobs
+  topKPerEntity?: number;
+  search?: boolean;
+  country?: string;
+  locationHint?: string;
+  // Standard wrapper knobs
+  strategy?: 'browser' | 'http';
+  config?: Record<string, unknown>;
+  browserConfig?: Record<string, unknown>;
+  crawlerConfig?: Record<string, unknown>;
+  llmConfig?: Record<string, unknown>;
+  proxy?: string | ProxyConfig | Record<string, unknown>;
+  webhookUrl?: string;
+  priority?: number;
+  // Polling
+  wait?: boolean;
+  pollInterval?: number;
+  timeout?: number;
+}
+
+/** Edits to apply when resuming a paused enrich job. */
+export interface ResumeEnrichOptions {
+  entities?: Array<string | EnrichEntity>;
+  criteria?: Array<string | EnrichCriterion>;
+  features?: Array<string | EnrichFeature>;
+  groups?: Record<string, string[]>;
+}
+
+/** Options for `crawler.waitEnrichJob(jobId, options)`. */
+export interface WaitEnrichOptions {
+  until?: EnrichStatus;
+  pollInterval?: number;
+  timeout?: number;
+}
+
+// ─── Enrich vocabulary normalizers (string shortcuts) ────────────────
+
+function normalizeEntity(item: string | EnrichEntity): Record<string, unknown> {
+  if (typeof item === 'string') return { name: item };
+  const out: Record<string, unknown> = { name: item.name };
+  if (item.title !== undefined) out.title = item.title;
+  if (item.sourceUrl !== undefined) out.source_url = item.sourceUrl;
+  return out;
+}
+
+function normalizeCriterion(item: string | EnrichCriterion): Record<string, unknown> {
+  if (typeof item === 'string') return { text: item };
+  const out: Record<string, unknown> = { text: item.text };
+  if (item.kind !== undefined) out.kind = item.kind;
+  return out;
+}
+
+function normalizeFeature(item: string | EnrichFeature): Record<string, unknown> {
+  if (typeof item === 'string') return { name: item };
+  const out: Record<string, unknown> = { name: item.name };
+  if (item.description !== undefined) out.description = item.description;
+  return out;
 }
 
 /**
@@ -1129,144 +1213,168 @@ export class AsyncWebCrawler {
   async cancelExtractJob(jobId: string): Promise<boolean> { await this.http.delete(`/v1/extract/jobs/${jobId}`); return true; }
 
   // =========================================================================
-  // Enrich API
+  // Enrich v2 API (multi-phase)
   // =========================================================================
 
   /**
-   * Enrich a list of URLs by extracting specified fields.
+   * Create a multi-phase enrichment job.
    *
-   * Each URL becomes a row in the output table. The pipeline crawls each URL,
-   * follows links to find missing fields, and optionally searches Google.
+   * Phase machine:
+   *   queued → planning → plan_ready → resolving_urls → urls_ready
+   *         → extracting → merging → completed
    *
-   * @param urls - URLs to enrich (1-100).
-   * @param schema - Fields to extract. Each is {name: "...", description?: "..."}.
-   * @param options - Enrichment options.
-   * @returns EnrichJobStatus with rows containing extracted fields and sources.
+   * Defaults `autoConfirmPlan=true, autoConfirmUrls=true` make the job run
+   * straight through. Set either to false for a human-in-loop review flow
+   * and resume via `resumeEnrichJob(...)`.
    *
    * @example
-   * ```typescript
-   * const result = await crawler.enrich(
-   *   ['https://kidocode.com'],
-   *   [{ name: 'Company Name' }, { name: 'Email', description: 'contact email' }],
-   *   { maxDepth: 1, wait: true, timeout: 120 },
-   * );
-   * console.log(result.rows?.[0].fields);
-   * ```
+   * // Agent one-shot
+   * const result = await crawler.enrich({
+   *   query: 'licensed nurseries in North York Toronto',
+   *   country: 'ca',
+   * });
+   * for (const row of result.phaseData.rows ?? []) console.log(row.fields);
+   *
+   * @example
+   * // Pre-resolved URLs
+   * const result = await crawler.enrich({
+   *   urls: ['https://example.com/a', 'https://example.com/b'],
+   *   features: ['price', 'hours'],
+   * });
    */
-  async enrich(
-    urls: string[],
-    schema: Array<{ name: string; description?: string }>,
-    options: {
-      maxDepth?: number;
-      maxLinks?: number;
-      enableSearch?: boolean;
-      retryCount?: number;
-      strategy?: 'browser' | 'http';
-      llmConfig?: Record<string, unknown>;
-      proxy?: string | Record<string, unknown>;
-      webhookUrl?: string;
-      priority?: number;
-      wait?: boolean;
-      pollInterval?: number;
-      timeout?: number;
-    } = {},
-  ): Promise<EnrichJobStatus> {
+  async enrich(options: EnrichOptions = {}): Promise<EnrichJobStatus> {
     const {
-      maxDepth = 1,
-      maxLinks = 5,
-      enableSearch = false,
-      retryCount = 1,
-      strategy = 'browser',
-      llmConfig,
-      proxy,
-      webhookUrl,
-      priority = 5,
-      wait = true,
-      pollInterval = 3.0,
-      timeout = 600,
+      query, entities, criteria, features, urls, groups,
+      autoConfirmPlan = true, autoConfirmUrls = true,
+      topKPerEntity = 3, search = true, country, locationHint,
+      strategy = 'http',
+      config, browserConfig, crawlerConfig, llmConfig,
+      proxy, webhookUrl, priority = 5,
+      wait = true, pollInterval = 3.0, timeout = 600,
     } = options;
 
     const body: Record<string, unknown> = {
-      urls,
-      schema,
-      config: {
-        max_depth: maxDepth,
-        max_links: maxLinks,
-        enable_search: enableSearch,
-        retry_count: retryCount,
-      },
+      auto_confirm_plan: autoConfirmPlan,
+      auto_confirm_urls: autoConfirmUrls,
+      top_k_per_entity: topKPerEntity,
+      search,
       strategy,
       priority,
     };
-    if (llmConfig) body.llm_config = llmConfig;
-    if (proxy) {
+    if (query !== undefined) body.query = query;
+    if (entities !== undefined) body.entities = entities.map(normalizeEntity);
+    if (criteria !== undefined) body.criteria = criteria.map(normalizeCriterion);
+    if (features !== undefined) body.features = features.map(normalizeFeature);
+    if (urls !== undefined) body.urls = urls;
+    if (groups !== undefined) body.groups = groups;
+    if (country !== undefined) body.country = country;
+    if (locationHint !== undefined) body.location_hint = locationHint;
+    if (config !== undefined) body.config = config;
+    if (browserConfig !== undefined) body.browser_config = browserConfig;
+    if (crawlerConfig !== undefined) body.crawler_config = crawlerConfig;
+    if (llmConfig !== undefined) body.llm_config = llmConfig;
+    if (proxy !== undefined) {
       body.proxy = typeof proxy === 'string' ? { mode: proxy } : proxy;
     }
-    if (webhookUrl) body.webhook_url = webhookUrl;
+    if (webhookUrl !== undefined) body.webhook_url = webhookUrl;
 
-    const data = await this.http.post('/v1/enrich', body);
-    const resp = enrichResponseFromDict(data);
+    const data = await this.http.post('/v1/enrich/async', body);
+    const job = enrichJobStatusFromDict(data);
 
     if (wait) {
-      return this.waitEnrichJob(resp.jobId, pollInterval, timeout);
+      return this.waitEnrichJob(job.jobId, { pollInterval, timeout });
     }
-
-    // Return minimal status when not waiting
-    return {
-      jobId: resp.jobId,
-      status: resp.status,
-      progress: { total: 0, completed: 0, failed: 0 },
-      progressPercent: 0,
-      createdAt: resp.createdAt,
-    };
+    return job;
   }
 
-  /**
-   * Poll an enrichment job for status and completed rows.
-   */
+  /** Fetch the current status of an enrichment job — one poll, no wait. */
   async getEnrichJob(jobId: string): Promise<EnrichJobStatus> {
     const data = await this.http.get(`/v1/enrich/jobs/${jobId}`);
     return enrichJobStatusFromDict(data);
   }
 
   /**
-   * List enrichment jobs for the authenticated user.
+   * Poll an enrichment job until it reaches `until` or a terminal status.
+   *
+   * If `until` is set and the job pauses at a paused phase (`plan_ready` /
+   * `urls_ready`) without auto-confirm, returns the paused state immediately
+   * rather than spinning until timeout.
    */
-  async listEnrichJobs(options: {
-    limit?: number;
-    offset?: number;
-  } = {}): Promise<EnrichJobStatus[]> {
-    const { limit = 20, offset = 0 } = options;
-    const params: Record<string, string | number> = { limit, offset };
-    const data = await this.http.get('/v1/enrich/jobs', params);
-    return ((data.jobs || []) as Record<string, unknown>[]).map(enrichJobStatusFromDict);
+  async waitEnrichJob(
+    jobId: string,
+    options: WaitEnrichOptions = {},
+  ): Promise<EnrichJobStatus> {
+    const { until, pollInterval = 3.0, timeout = 600 } = options;
+    const start = Date.now();
+    while (true) {
+      const job = await this.getEnrichJob(jobId);
+      if (isEnrichJobComplete(job)) return job;
+      if (until !== undefined && job.status === until) return job;
+      if (
+        until !== undefined && ENRICH_PAUSED_STATUSES.includes(job.status) &&
+        ((job.status === 'plan_ready' && !job.autoConfirmPlan) ||
+         (job.status === 'urls_ready' && !job.autoConfirmUrls))
+      ) {
+        return job;
+      }
+      if (timeout && Date.now() - start > timeout * 1000) {
+        throw new TimeoutError(
+          `Enrich job ${jobId} did not reach '${until ?? 'completed'}' within ${timeout}s. ` +
+            `Status: ${job.status}, progress: ${job.progress.completedUrls}/${job.progress.totalUrls}`,
+        );
+      }
+      await this.sleep(pollInterval * 1000);
+    }
   }
 
   /**
-   * Cancel an enrichment job.
+   * Advance a paused job (`plan_ready` or `urls_ready`) to the next phase.
+   *
+   * Pass any subset of edits to apply before resuming. An empty body is valid
+   * — means "resume with the server's current values".
    */
+  async resumeEnrichJob(
+    jobId: string,
+    options: ResumeEnrichOptions = {},
+  ): Promise<EnrichJobStatus> {
+    const { entities, criteria, features, groups } = options;
+    const body: Record<string, unknown> = {};
+    if (entities !== undefined) body.entities = entities.map(normalizeEntity);
+    if (criteria !== undefined) body.criteria = criteria.map(normalizeCriterion);
+    if (features !== undefined) body.features = features.map(normalizeFeature);
+    if (groups !== undefined) body.groups = groups;
+    const data = await this.http.post(`/v1/enrich/jobs/${jobId}/continue`, body);
+    return enrichJobStatusFromDict(data);
+  }
+
+  /**
+   * Subscribe to the SSE stream for an enrichment job.
+   *
+   * Returns an async iterable of `EnrichEvent` objects. Iteration ends when
+   * the server sends a `complete` event or the connection drops.
+   */
+  async *streamEnrichJob(jobId: string): AsyncGenerator<EnrichEvent> {
+    for await (const [evtType, payload] of this.http.streamSse(`/v1/enrich/jobs/${jobId}/stream`)) {
+      yield enrichEventFromDict(evtType, payload);
+      if (evtType === 'complete') return;
+    }
+  }
+
+  /** Cancel a running enrichment job. */
   async cancelEnrichJob(jobId: string): Promise<boolean> {
     await this.http.delete(`/v1/enrich/jobs/${jobId}`);
     return true;
   }
 
-  private async waitEnrichJob(
-    jobId: string,
-    pollInterval: number = 3.0,
-    timeout?: number,
-  ): Promise<EnrichJobStatus> {
-    const start = Date.now();
-    while (true) {
-      const job = await this.getEnrichJob(jobId);
-      if (isEnrichJobComplete(job)) return job;
-      if (timeout && Date.now() - start > timeout * 1000) {
-        throw new TimeoutError(
-          `Enrich job ${jobId} did not complete within ${timeout}s. ` +
-            `Status: ${job.status}, progress: ${job.progress.completed}/${job.progress.total}`,
-        );
-      }
-      await this.sleep(pollInterval * 1000);
-    }
+  /** List enrichment jobs for the authenticated user. */
+  async listEnrichJobs(options: {
+    limit?: number;
+    offset?: number;
+  } = {}): Promise<EnrichJobListItem[]> {
+    const { limit = 20, offset = 0 } = options;
+    const params: Record<string, string | number> = { limit, offset };
+    const data = await this.http.get('/v1/enrich/jobs', params);
+    return ((data.jobs || []) as Record<string, unknown>[]).map(enrichJobListItemFromDict);
   }
 
   /**

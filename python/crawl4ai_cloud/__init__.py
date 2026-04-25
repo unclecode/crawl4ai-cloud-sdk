@@ -17,7 +17,7 @@ Example:
     ```
 """
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 # Main crawler class
 from .crawler import AsyncWebCrawler
@@ -69,13 +69,22 @@ from .models import (
     SiteCrawlProgress,
     WrapperJob,
     WrapperJobProgress,
-    # Enrich API models
-    EnrichFieldSource,
-    EnrichSearchCitation,
+    # Enrich v2 API models
+    EnrichEntity,
+    EnrichCriterion,
+    EnrichFeature,
+    EnrichPlan,
+    EnrichUrlCandidate,
     EnrichRow,
-    EnrichJobProgress,
-    EnrichResponse,
+    EnrichPhaseData,
+    EnrichProgress,
+    EnrichLlmBucket,
+    EnrichUsage,
     EnrichJobStatus,
+    EnrichJobListItem,
+    EnrichEvent,
+    ENRICH_TERMINAL_STATUSES,
+    ENRICH_PAUSED_STATUSES,
 )
 
 # Errors
@@ -107,8 +116,12 @@ __all__ = [
     "WrapperUsage", "MarkdownResponse", "ScreenshotResponse", "ExtractResponse",
     "MapUrlInfo", "MapResponse", "SiteCrawlResponse", "SiteCrawlJobStatus",
     "SiteCrawlProgress", "WrapperJob", "WrapperJobProgress",
-    "EnrichFieldSource", "EnrichSearchCitation", "EnrichRow",
-    "EnrichJobProgress", "EnrichResponse", "EnrichJobStatus",
+    # Enrich v2
+    "EnrichEntity", "EnrichCriterion", "EnrichFeature", "EnrichPlan",
+    "EnrichUrlCandidate", "EnrichRow", "EnrichPhaseData", "EnrichProgress",
+    "EnrichLlmBucket", "EnrichUsage", "EnrichJobStatus", "EnrichJobListItem",
+    "EnrichEvent",
+    "ENRICH_TERMINAL_STATUSES", "ENRICH_PAUSED_STATUSES",
     # Errors
     "CloudError", "AuthenticationError", "RateLimitError", "QuotaExceededError",
     "NotFoundError", "ValidationError", "TimeoutError", "ServerError",

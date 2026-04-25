@@ -89,33 +89,64 @@ while (true) {
 }
 ```
 
-### Enrich URLs (build a data table)
+### Enrich v2 (build a data table)
+
+Multi-phase enrichment. Give a brief, a list of entities, or a list of URLs. The job walks through `planning → resolving_urls → extracting → merging`, with optional human-review pauses at `plan_ready` and `urls_ready`.
 
 ```typescript
-const result = await crawler.enrich(
-  ['https://kidocode.com', 'https://brightchamps.com'],
-  [
-    { name: 'Company Name' },
-    { name: 'Email', description: 'primary contact email' },
-    { name: 'Phone', description: 'phone number' },
-  ],
-  { maxDepth: 1, enableSearch: true },
-);
-
-for (const row of result.rows ?? []) {
-  console.log(`${row.url}: ${JSON.stringify(row.fields)}`);
-  // Sources show where each field was found
-  for (const [field, src] of Object.entries(row.sources)) {
-    console.log(`  ${field}: ${src.method} from ${src.url}`);
+// 1. Agent one-shot — give a brief, get a table back
+const result = await crawler.enrich({
+  query: 'licensed nurseries in North York Toronto with extended hours',
+  country: 'ca',
+  topKPerEntity: 3,
+});
+for (const row of result.phaseData.rows ?? []) {
+  console.log(row.inputKey, row.fields);
+  for (const [f, c] of Object.entries(row.certainty)) {
+    console.log(`  ${f}: ${c.toFixed(2)}  (from ${row.sources[f].url})`);
   }
 }
+console.log(`crawls=${result.usage.crawls}, llm=${JSON.stringify(result.usage.llmTotals)}`);
 
-// Fire-and-forget + manual poll
-const job = await crawler.enrich(urls, schema, { wait: false });
-const status = await crawler.getEnrichJob(job.jobId);
+// 2. Pre-resolved URLs — skip planning + URL resolution
+const r2 = await crawler.enrich({
+  urls: ['https://example.com/a', 'https://example.com/b'],
+  features: ['price', 'hours'],   // string shortcut for [{name: 'price'}, ...]
+});
+
+// 3. Human review flow — pause for editing the plan
+const job = await crawler.enrich({
+  query: 'best Italian restaurants in Brooklyn',
+  country: 'us',
+  autoConfirmPlan: false,
+  autoConfirmUrls: false,
+  wait: false,
+});
+
+let paused = await crawler.waitEnrichJob(job.jobId, { until: 'plan_ready' });
+console.log(paused.phaseData.plan?.entities, paused.phaseData.plan?.features);
+
+await crawler.resumeEnrichJob(job.jobId, {
+  entities: [{ name: "Lucali" }, { name: "Roberta's" }],
+  features: [{ name: 'address' }, { name: 'hours' }],
+});
+paused = await crawler.waitEnrichJob(job.jobId, { until: 'urls_ready' });
+await crawler.resumeEnrichJob(job.jobId);   // accept server's URL picks
+const final = await crawler.waitEnrichJob(job.jobId);
+
+// 4. Live progress via SSE
+for await (const event of crawler.streamEnrichJob(job.jobId)) {
+  if (event.type === 'phase')   console.log('→', event.status);
+  if (event.type === 'row')     console.log('✓', event.row?.inputKey);
+  if (event.type === 'complete') break;
+}
+
+// Job management
 const jobs = await crawler.listEnrichJobs({ limit: 5 });
 await crawler.cancelEnrichJob(job.jobId);
 ```
+
+**Vocabulary:** **entities** are row identifiers; **criteria** are search-side filters; **features** are extraction columns. **Per-purpose usage** is reported in `result.usage.llmTokensByPurpose` with five buckets: `plan_intent`, `url_plan`, `paywall_classify`, `extract`, `merge_tiebreak` (only buckets that ran appear).
 
 ## Wrapper API Reference
 
@@ -127,7 +158,7 @@ await crawler.cancelEnrichJob(job.jobId);
 | `map(url)` | `POST /v1/map` | `MapResponse` | Simple URL discovery (always sync) |
 | `scan(url, {criteria})` | `POST /v1/scan` | `ScanResult` | **AI-assisted** URL discovery with plain-English criteria |
 | `crawlSite(url, {criteria, extract})` | `POST /v1/crawl/site` | `SiteCrawlResponse` | **AI-assisted** whole-site crawl (always async) |
-| `enrich(urls, schema, opts)` | `POST /v1/enrich` | `EnrichJobStatus` | Per-URL data enrichment with depth + search |
+| `enrich(opts)` | `POST /v1/enrich/async` | `EnrichJobStatus` | Multi-phase enrichment from query / entities / URLs |
 
 ### Markdown Options
 

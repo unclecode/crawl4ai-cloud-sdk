@@ -1,7 +1,24 @@
+// Enrich v2 E2E tests — runs against stage.crawl4ai.com.
+//
+// Covers the seven-method surface:
+//
+//	Enrich(...)         POST /v1/enrich/async
+//	GetEnrichJob        GET  /v1/enrich/jobs/{id}
+//	WaitEnrichJob       poll loop, optional Until phase
+//	ResumeEnrichJob     POST /v1/enrich/jobs/{id}/continue
+//	StreamEnrichJob     GET  /v1/enrich/jobs/{id}/stream  (SSE)
+//	CancelEnrichJob     DELETE /v1/enrich/jobs/{id}
+//	ListEnrichJobs      GET  /v1/enrich/jobs
+//
+// Run:
+//
+//	go test ./pkg/crawl4ai/ -run TestEnrich -v -timeout 10m
 package crawl4ai
 
 import (
+	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -12,7 +29,7 @@ func getEnrichTestKey() string {
 	if key := os.Getenv("CRAWL4AI_API_KEY"); key != "" {
 		return key
 	}
-	return "sk_live_cM9VqS3ostZxB0FcjBZScbVnbk_Zni707mxU-uZWJKQ"
+	return "sk_live_V89kxHtmkxw0jJORu_sWzyuvGw6TKHaJhoNGK8gGdqU"
 }
 
 func getEnrichBaseURL() string {
@@ -34,335 +51,274 @@ func setupEnrich(t *testing.T) *AsyncWebCrawler {
 	return c
 }
 
-// =============================================================================
-// Happy path
-// =============================================================================
+// ─── 1. URLs-only mode (fastest, deterministic) ──────────────────────────
 
-func TestEnrichBasic(t *testing.T) {
+func TestEnrichV2_URLsOnly_SingleURL(t *testing.T) {
 	c := setupEnrich(t)
-
-	result, err := c.Enrich(
-		[]string{"https://kidocode.com"},
-		[]EnrichFieldSpec{
-			{Name: "Company Name"},
-			{Name: "Email", Description: "contact email"},
+	result, err := c.Enrich(&EnrichOptions{
+		URLs: []string{"https://kidocode.com"},
+		Features: []EnrichFeature{
+			{Name: "company_name"},
+			{Name: "contact_email", Description: "primary contact email"},
 		},
-		&EnrichOptions{
-			MaxDepth: 0,
-			Wait:     true,
-			Strategy: "browser",
-			Timeout:  120 * time.Second,
-		},
-	)
+		Strategy: "http",
+		Wait:     true,
+		Timeout:  3 * time.Minute,
+	})
 	if err != nil {
 		t.Fatalf("Enrich: %v", err)
 	}
 	if !result.IsComplete() {
-		t.Fatalf("expected complete, got status=%s", result.Status)
+		t.Fatalf("job not terminal: %s (%s)", result.Status, result.Error)
 	}
 	if !result.IsSuccessful() {
-		t.Fatalf("expected successful, got status=%s, error=%s", result.Status, result.Error)
+		t.Fatalf("job ended in %s: %s", result.Status, result.Error)
 	}
-	if len(result.Rows) != 1 {
-		t.Fatalf("expected 1 row, got %d", len(result.Rows))
+	if len(result.PhaseData.Rows) < 1 {
+		t.Fatalf("expected at least 1 row, got %d", len(result.PhaseData.Rows))
 	}
-
-	row := result.Rows[0]
-	if row.URL != "https://kidocode.com" {
-		t.Fatalf("expected url=https://kidocode.com, got %s", row.URL)
+	row := result.PhaseData.Rows[0]
+	if len(row.Fields) == 0 {
+		t.Fatalf("no fields extracted (error=%q)", row.Error)
 	}
-	if row.Fields["Company Name"] == nil || row.Fields["Company Name"] == "" {
-		t.Fatal("Company Name should be found")
-	}
-	if row.Status != "complete" && row.Status != "partial" {
-		t.Fatalf("expected row status complete|partial, got %s", row.Status)
-	}
-	if row.DepthUsed != 0 {
-		t.Fatalf("expected depth_used=0, got %d", row.DepthUsed)
-	}
-}
-
-func TestEnrichWithDepth(t *testing.T) {
-	c := setupEnrich(t)
-
-	result, err := c.Enrich(
-		[]string{"https://kidocode.com"},
-		[]EnrichFieldSpec{
-			{Name: "Company Name"},
-			{Name: "Email", Description: "primary contact email"},
-			{Name: "Phone", Description: "phone number"},
-		},
-		&EnrichOptions{
-			MaxDepth: 1,
-			MaxLinks: 3,
-			Wait:     true,
-			Timeout:  120 * time.Second,
-		},
-	)
-	if err != nil {
-		t.Fatalf("Enrich with depth: %v", err)
-	}
-	if !result.IsComplete() {
-		t.Fatalf("expected complete, got status=%s", result.Status)
-	}
-	if len(result.Rows) != 1 {
-		t.Fatalf("expected 1 row, got %d", len(result.Rows))
-	}
-
-	row := result.Rows[0]
-	if row.Fields["Company Name"] == nil || row.Fields["Company Name"] == "" {
-		t.Fatal("Company Name should be found")
-	}
-	// With depth 1, should find more fields
-	found := 0
-	for _, v := range row.Fields {
-		if v != nil && v != "" {
-			found++
+	hasCompany := false
+	for k := range row.Fields {
+		if strings.HasPrefix(strings.ToLower(k), "company") {
+			hasCompany = true
+			break
 		}
 	}
-	if found < 2 {
-		t.Fatalf("expected at least 2 fields found, got %d", found)
+	if !hasCompany {
+		t.Fatalf("company_name missing from row.Fields=%v", row.Fields)
+	}
+	// Usage envelope
+	if result.Usage.Crawls < 1 {
+		t.Fatalf("expected crawls>=1, got %d", result.Usage.Crawls)
+	}
+	bucket, ok := result.Usage.LlmTokensByPurpose["extract"]
+	if !ok {
+		t.Fatalf("missing extract usage bucket; have %v", keys(result.Usage.LlmTokensByPurpose))
+	}
+	if bucket.Input <= 0 || bucket.Output <= 0 {
+		t.Fatalf("extract bucket empty: input=%d output=%d", bucket.Input, bucket.Output)
 	}
 }
 
-func TestEnrichMultipleUrls(t *testing.T) {
+func TestEnrichV2_URLsOnly_StringFeatures(t *testing.T) {
 	c := setupEnrich(t)
-
-	result, err := c.Enrich(
-		[]string{"https://kidocode.com", "https://httpbin.org"},
-		[]EnrichFieldSpec{
-			{Name: "Title", Description: "page or company title"},
-		},
-		&EnrichOptions{
-			MaxDepth: 0,
-			Wait:     true,
-			Timeout:  120 * time.Second,
-		},
-	)
-	if err != nil {
-		t.Fatalf("Enrich multiple: %v", err)
-	}
-	if !result.IsComplete() {
-		t.Fatalf("expected complete, got status=%s", result.Status)
-	}
-	if result.Progress.Total != 2 {
-		t.Fatalf("expected progress.total=2, got %d", result.Progress.Total)
-	}
-	if len(result.Rows) != 2 {
-		t.Fatalf("expected 2 rows, got %d", len(result.Rows))
-	}
-
-	urls := make(map[string]bool)
-	for _, r := range result.Rows {
-		urls[r.URL] = true
-	}
-	if !urls["https://kidocode.com"] && !urls["https://httpbin.org"] {
-		t.Fatal("expected at least one known URL in rows")
-	}
-}
-
-// =============================================================================
-// Source attribution
-// =============================================================================
-
-func TestEnrichSourceAttribution(t *testing.T) {
-	c := setupEnrich(t)
-
-	result, err := c.Enrich(
-		[]string{"https://kidocode.com"},
-		[]EnrichFieldSpec{
-			{Name: "Company Name"},
-			{Name: "Email"},
-		},
-		&EnrichOptions{
-			MaxDepth: 0,
-			Wait:     true,
-			Timeout:  120 * time.Second,
-		},
-	)
+	result, err := c.Enrich(&EnrichOptions{
+		URLs:     []string{"https://example.com"},
+		Features: []EnrichFeature{{Name: "title"}, {Name: "description"}},
+		Strategy: "http",
+		Wait:     true,
+		Timeout:  2 * time.Minute,
+	})
 	if err != nil {
 		t.Fatalf("Enrich: %v", err)
 	}
-
-	row := result.Rows[0]
-	for fieldName, value := range row.Fields {
-		if value == nil || value == "" {
-			continue
-		}
-		src, ok := row.Sources[fieldName]
-		if !ok {
-			t.Fatalf("missing source for field %q", fieldName)
-		}
-		if src.Method != "direct" && src.Method != "depth" && src.Method != "search" {
-			t.Fatalf("unexpected source method %q for field %q", src.Method, fieldName)
-		}
-		if src.URL == "" {
-			t.Fatalf("source URL empty for field %q", fieldName)
-		}
+	if !result.IsComplete() {
+		t.Fatalf("not terminal: %s", result.Status)
+	}
+	if len(result.PhaseData.Rows) < 1 {
+		t.Fatalf("expected at least 1 row, got %d", len(result.PhaseData.Rows))
 	}
 }
 
-// =============================================================================
-// Job management
-// =============================================================================
+// ─── 2. Job lifecycle ────────────────────────────────────────────────────
 
-func TestEnrichFireAndForget(t *testing.T) {
+func TestEnrichV2_Lifecycle_FireAndForget(t *testing.T) {
 	c := setupEnrich(t)
-
-	result, err := c.Enrich(
-		[]string{"https://kidocode.com"},
-		[]EnrichFieldSpec{{Name: "Company Name"}},
-		&EnrichOptions{
-			MaxDepth: 0,
-			Wait:     false,
-		},
-	)
+	job, err := c.Enrich(&EnrichOptions{
+		URLs:     []string{"https://kidocode.com"},
+		Features: []EnrichFeature{{Name: "company_name"}},
+		Strategy: "http",
+		Wait:     false,
+	})
 	if err != nil {
-		t.Fatalf("Enrich fire-and-forget: %v", err)
+		t.Fatalf("Enrich: %v", err)
 	}
-	if result.JobID == "" {
-		t.Fatal("expected job_id")
+	if !strings.HasPrefix(job.JobID, "enr_") {
+		t.Fatalf("bad job_id: %q", job.JobID)
 	}
-	if result.Status != "pending" {
-		t.Fatalf("expected status=pending, got %s", result.Status)
+	latest, err := c.GetEnrichJob(job.JobID)
+	if err != nil {
+		t.Fatalf("GetEnrichJob: %v", err)
 	}
-
-	// Poll until done
-	var status *EnrichJobStatus
-	for i := 0; i < 30; i++ {
-		status, err = c.GetEnrichJob(result.JobID)
-		if err != nil {
-			t.Fatalf("GetEnrichJob: %v", err)
-		}
-		if status.IsComplete() {
-			break
-		}
-		time.Sleep(2 * time.Second)
-	}
-
-	if status == nil || !status.IsComplete() {
-		t.Fatal("job did not complete within polling window")
-	}
-	if status.Rows == nil {
-		t.Fatal("expected rows on completed job")
+	if latest.JobID != job.JobID {
+		t.Fatalf("job id mismatch: %q vs %q", latest.JobID, job.JobID)
 	}
 }
 
-func TestEnrichListJobs(t *testing.T) {
+func TestEnrichV2_Lifecycle_WaitToTerminal(t *testing.T) {
 	c := setupEnrich(t)
+	job, err := c.Enrich(&EnrichOptions{
+		URLs:     []string{"https://example.com"},
+		Features: []EnrichFeature{{Name: "title"}},
+		Strategy: "http",
+		Wait:     false,
+	})
+	if err != nil {
+		t.Fatalf("Enrich: %v", err)
+	}
+	terminal, err := c.WaitEnrichJob(job.JobID, WaitEnrichOptions{Timeout: 2 * time.Minute})
+	if err != nil {
+		t.Fatalf("WaitEnrichJob: %v", err)
+	}
+	if !terminal.IsComplete() || !terminal.IsSuccessful() {
+		t.Fatalf("not successful: %s %s", terminal.Status, terminal.Error)
+	}
+}
 
+func TestEnrichV2_Lifecycle_List(t *testing.T) {
+	c := setupEnrich(t)
 	jobs, err := c.ListEnrichJobs(5, 0)
 	if err != nil {
 		t.Fatalf("ListEnrichJobs: %v", err)
 	}
 	if len(jobs) < 1 {
-		t.Fatal("expected at least 1 enrich job in list")
+		t.Fatalf("expected >=1 job from earlier tests, got %d", len(jobs))
 	}
 	for _, j := range jobs {
-		if j.JobID == "" {
-			t.Fatal("expected job_id on each listed job")
+		if !strings.HasPrefix(j.JobID, "enr_") {
+			t.Fatalf("bad job_id in list: %q", j.JobID)
 		}
 	}
 }
 
-func TestEnrichCancelJob(t *testing.T) {
+func TestEnrichV2_Lifecycle_Cancel(t *testing.T) {
 	c := setupEnrich(t)
-
-	// Create a job with multiple URLs and search to keep it running
-	result, err := c.Enrich(
-		[]string{"https://example.com", "https://httpbin.org", "https://kidocode.com"},
-		[]EnrichFieldSpec{
-			{Name: "Title"},
-			{Name: "Description", Description: "page description"},
-			{Name: "Email"},
-		},
-		&EnrichOptions{
-			MaxDepth:     1,
-			EnableSearch: true,
-			Wait:         false,
-		},
-	)
+	job, err := c.Enrich(&EnrichOptions{
+		Query:         "top BBQ restaurants in Austin Texas with outdoor seating",
+		Country:       "us",
+		TopKPerEntity: 2,
+		Wait:          false,
+	})
 	if err != nil {
 		t.Fatalf("Enrich: %v", err)
 	}
-	if result.JobID == "" {
-		t.Fatal("expected job_id")
-	}
-
-	// Cancel
-	if err := c.CancelEnrichJob(result.JobID); err != nil {
+	if err := c.CancelEnrichJob(job.JobID); err != nil {
 		t.Fatalf("CancelEnrichJob: %v", err)
 	}
-
-	// Verify cancelled
-	status, err := c.GetEnrichJob(result.JobID)
+	time.Sleep(2 * time.Second)
+	latest, err := c.GetEnrichJob(job.JobID)
 	if err != nil {
-		t.Fatalf("GetEnrichJob after cancel: %v", err)
+		t.Fatalf("GetEnrichJob: %v", err)
 	}
-	if status.Status != "cancelled" {
-		t.Fatalf("expected status=cancelled, got %s", status.Status)
+	if latest.Status != EnrichStatusCancelled {
+		t.Fatalf("expected cancelled, got %s", latest.Status)
 	}
 }
 
-// =============================================================================
-// Progress and token usage
-// =============================================================================
+// ─── 3. Review flow: pause + resume with edits ───────────────────────────
 
-func TestEnrichProgressTracking(t *testing.T) {
+func TestEnrichV2_Review_PauseAndResume(t *testing.T) {
 	c := setupEnrich(t)
+	autoPlanFalse := false
+	autoUrlsTrue := true
+	job, err := c.Enrich(&EnrichOptions{
+		Query:           "best Italian restaurants in Brooklyn New York",
+		Country:         "us",
+		TopKPerEntity:   1,
+		AutoConfirmPlan: &autoPlanFalse,
+		AutoConfirmURLs: &autoUrlsTrue,
+		Wait:            false,
+	})
+	if err != nil {
+		t.Fatalf("Enrich: %v", err)
+	}
+	paused, err := c.WaitEnrichJob(job.JobID, WaitEnrichOptions{
+		Until:   EnrichStatusPlanReady,
+		Timeout: 2 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("WaitEnrichJob until plan_ready: %v", err)
+	}
+	if paused.Status != EnrichStatusPlanReady {
+		t.Fatalf("expected plan_ready, got %s", paused.Status)
+	}
+	if paused.PhaseData.Plan == nil {
+		t.Fatalf("plan should be populated at plan_ready")
+	}
+	if len(paused.PhaseData.Plan.Entities) < 1 {
+		t.Fatalf("expected entities, got 0")
+	}
+	if _, ok := paused.Usage.LlmTokensByPurpose["plan_intent"]; !ok {
+		t.Fatalf("expected plan_intent usage bucket")
+	}
 
-	result, err := c.Enrich(
-		[]string{"https://kidocode.com"},
-		[]EnrichFieldSpec{{Name: "Company Name"}},
-		&EnrichOptions{
-			MaxDepth: 0,
-			Wait:     true,
-			Timeout:  120 * time.Second,
-		},
-	)
+	// Trim to one entity + one feature so the rest is fast
+	editedEntities := []EnrichEntity{{Name: paused.PhaseData.Plan.Entities[0].Name}}
+	editedFeatures := []EnrichFeature{{Name: "address"}}
+	resumed, err := c.ResumeEnrichJob(job.JobID, &ResumeEnrichOptions{
+		Entities: editedEntities,
+		Features: editedFeatures,
+	})
+	if err != nil {
+		t.Fatalf("ResumeEnrichJob: %v", err)
+	}
+	if resumed.Status == EnrichStatusPlanReady {
+		t.Fatalf("expected past plan_ready after resume, still %s", resumed.Status)
+	}
+	final, err := c.WaitEnrichJob(job.JobID, WaitEnrichOptions{Timeout: 5 * time.Minute})
+	if err != nil {
+		t.Fatalf("WaitEnrichJob terminal: %v", err)
+	}
+	if !final.IsComplete() {
+		t.Fatalf("expected terminal, got %s", final.Status)
+	}
+	if len(final.PhaseData.Rows) > 1 {
+		t.Fatalf("expected ≤1 row after edit, got %d", len(final.PhaseData.Rows))
+	}
+}
+
+// ─── 4. SSE stream ───────────────────────────────────────────────────────
+
+func TestEnrichV2_Stream_SnapshotAndComplete(t *testing.T) {
+	c := setupEnrich(t)
+	job, err := c.Enrich(&EnrichOptions{
+		URLs:     []string{"https://example.com"},
+		Features: []EnrichFeature{{Name: "title"}},
+		Strategy: "http",
+		Wait:     false,
+	})
 	if err != nil {
 		t.Fatalf("Enrich: %v", err)
 	}
 
-	if result.Progress.Total != 1 {
-		t.Fatalf("expected progress.total=1, got %d", result.Progress.Total)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	events, err := c.StreamEnrichJob(ctx, job.JobID)
+	if err != nil {
+		t.Fatalf("StreamEnrichJob: %v", err)
 	}
-	if result.Progress.Completed+result.Progress.Failed != 1 {
-		t.Fatalf("expected completed+failed=1, got %d+%d",
-			result.Progress.Completed, result.Progress.Failed)
+
+	seen := map[string]bool{}
+	for evt := range events {
+		seen[evt.Type] = true
+		if evt.Type == "snapshot" && evt.Snapshot == nil {
+			t.Errorf("snapshot event missing parsed snapshot")
+		}
+		if evt.Type == "snapshot" && evt.Snapshot != nil && evt.Snapshot.JobID != job.JobID {
+			t.Errorf("snapshot job_id mismatch: %q", evt.Snapshot.JobID)
+		}
+		if evt.Type == "complete" {
+			break
+		}
 	}
-	if result.ProgressPercent != 100 {
-		t.Fatalf("expected progress_percent=100, got %d", result.ProgressPercent)
+	if !seen["snapshot"] {
+		t.Fatalf("missing snapshot event; saw %v", keys(seen))
+	}
+	if !seen["complete"] {
+		t.Fatalf("stream never emitted complete; saw %v", keys(seen))
 	}
 }
 
-func TestEnrichTokenUsage(t *testing.T) {
-	c := setupEnrich(t)
+// ─── helpers ─────────────────────────────────────────────────────────────
 
-	result, err := c.Enrich(
-		[]string{"https://kidocode.com"},
-		[]EnrichFieldSpec{
-			{Name: "Company Name"},
-			{Name: "Email"},
-		},
-		&EnrichOptions{
-			MaxDepth: 0,
-			Wait:     true,
-			Timeout:  120 * time.Second,
-		},
-	)
-	if err != nil {
-		t.Fatalf("Enrich: %v", err)
+func keys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
 	}
-	if len(result.Rows) == 0 {
-		t.Fatal("expected at least 1 row")
-	}
-
-	row := result.Rows[0]
-	if row.TokenUsage == nil {
-		t.Fatal("expected token_usage to be populated")
-	}
-	if row.TokenUsage["total_tokens"] <= 0 {
-		t.Fatalf("expected total_tokens > 0, got %d", row.TokenUsage["total_tokens"])
-	}
+	return out
 }

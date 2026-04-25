@@ -1023,152 +1023,354 @@ class SiteCrawlJobStatus:
         )
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Enrich v2 — multi-phase API
+# ─────────────────────────────────────────────────────────────────────
+#
+# A single POST creates a job that walks through phases:
+#
+#   queued → planning → plan_ready → resolving_urls → urls_ready
+#         → extracting → merging → completed | partial | failed | cancelled
+#
+# `auto_confirm_plan` / `auto_confirm_urls` (default True) make the job run
+# straight through; set either to False to pause for review and resume via
+# `resume_enrich_job(...)`.
+
+ENRICH_TERMINAL_STATUSES = ("completed", "partial", "failed", "cancelled")
+ENRICH_PAUSED_STATUSES = ("plan_ready", "urls_ready")
+
+
 @dataclass
-class EnrichFieldSource:
-    """Source attribution for a single enriched field."""
-    url: str = ""
-    method: str = ""  # "direct", "depth", "search"
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "EnrichFieldSource":
-        return cls(url=data.get("url", ""), method=data.get("method", ""))
-
-
-@dataclass
-class EnrichSearchCitation:
-    """Citation for a field found via search fallback."""
-    field: str = ""
+class EnrichEntity:
+    """One row identifier (specific proper noun)."""
+    name: str = ""
+    title: str = ""
     source_url: str = ""
-    source_title: str = ""
-    query_used: str = ""
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "EnrichSearchCitation":
+    def from_dict(cls, data: Dict[str, Any]) -> "EnrichEntity":
         return cls(
-            field=data.get("field", ""),
+            name=data.get("name", ""),
+            title=data.get("title", ""),
             source_url=data.get("source_url", ""),
-            source_title=data.get("source_title", ""),
+        )
+
+
+@dataclass
+class EnrichCriterion:
+    """Search-side filter used when finding URLs per entity."""
+    text: str = ""
+    kind: str = "filter"  # "location" | "filter" | "other"
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "EnrichCriterion":
+        return cls(text=data.get("text", ""), kind=data.get("kind", "filter"))
+
+
+@dataclass
+class EnrichFeature:
+    """Extraction column — one field per crawled page."""
+    name: str = ""
+    description: str = ""
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "EnrichFeature":
+        return cls(
+            name=data.get("name", ""),
+            description=data.get("description", ""),
+        )
+
+
+@dataclass
+class EnrichPlan:
+    """LLM-expanded plan (entities + criteria + features) for a query."""
+    entities: List[EnrichEntity] = field(default_factory=list)
+    criteria: List[EnrichCriterion] = field(default_factory=list)
+    features: List[EnrichFeature] = field(default_factory=list)
+    assistant_message: str = ""
+    queries_used: List[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "EnrichPlan":
+        return cls(
+            entities=[EnrichEntity.from_dict(e) for e in (data.get("entities") or [])],
+            criteria=[EnrichCriterion.from_dict(c) for c in (data.get("criteria") or [])],
+            features=[EnrichFeature.from_dict(f) for f in (data.get("features") or [])],
+            assistant_message=data.get("assistant_message", ""),
+            queries_used=list(data.get("queries_used") or []),
+        )
+
+
+@dataclass
+class EnrichUrlCandidate:
+    """One URL found for an entity by Serper grounding."""
+    url: str = ""
+    rank: int = 0
+    domain_tier: float = 0.5
+    title: str = ""
+    query_used: str = ""
+    requires_auth: bool = False
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "EnrichUrlCandidate":
+        return cls(
+            url=data.get("url", ""),
+            rank=data.get("rank", 0),
+            domain_tier=float(data.get("domain_tier", 0.5)),
+            title=data.get("title", ""),
             query_used=data.get("query_used", ""),
+            requires_auth=bool(data.get("requires_auth", False)),
         )
 
 
 @dataclass
 class EnrichRow:
-    """Result for a single URL in an enrichment job."""
-    url: str = ""
+    """One merged row in the enrichment table.
+
+    For entity/query input: `input_key` is the entity name, `fragments_used`
+    is the number of source URLs merged.
+    For URLs-only input: `input_key` is None, `url` is the single source.
+
+    `sources[field]` maps each extracted field to its provenance dict
+    (url, method, certainty, …). `disputed` lists field names where K
+    sources disagreed. `certainty[field]` is 0.0–1.0.
+    """
+    group_id: str = ""
+    input_key: Optional[str] = None
+    url: Optional[str] = None
     fields: Dict[str, Any] = field(default_factory=dict)
-    missing: List[str] = field(default_factory=list)
-    sources: Dict[str, EnrichFieldSource] = field(default_factory=dict)
-    search_citations: List[EnrichSearchCitation] = field(default_factory=list)
-    status: str = "pending"  # "complete", "partial", "failed"
-    depth_used: int = 0
-    search_used: bool = False
-    token_usage: Optional[Dict[str, int]] = None
-    duration_ms: int = 0
+    sources: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    certainty: Dict[str, float] = field(default_factory=dict)
+    disputed: List[str] = field(default_factory=list)
+    fragments_used: int = 1
+    status: str = "complete"  # "complete" | "partial" | "failed"
     error: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "EnrichRow":
-        sources = {}
-        for fname, src in (data.get("sources") or {}).items():
-            sources[fname] = EnrichFieldSource.from_dict(src) if isinstance(src, dict) else EnrichFieldSource()
-        citations = [
-            EnrichSearchCitation.from_dict(c) for c in (data.get("search_citations") or [])
-        ]
         return cls(
-            url=data.get("url", ""),
+            group_id=data.get("group_id", ""),
+            input_key=data.get("input_key"),
+            url=data.get("url"),
             fields=data.get("fields") or {},
-            missing=data.get("missing") or [],
-            sources=sources,
-            search_citations=citations,
-            status=data.get("status", "pending"),
-            depth_used=data.get("depth_used", 0),
-            search_used=data.get("search_used", False),
-            token_usage=data.get("token_usage"),
-            duration_ms=data.get("duration_ms", 0),
+            sources=data.get("sources") or {},
+            certainty=data.get("certainty") or {},
+            disputed=list(data.get("disputed") or []),
+            fragments_used=data.get("fragments_used", 1),
+            status=data.get("status", "complete"),
             error=data.get("error"),
         )
 
 
 @dataclass
-class EnrichJobProgress:
-    """Progress for an enrichment job."""
-    total: int = 0
-    completed: int = 0
-    failed: int = 0
-
-    @property
-    def percent(self) -> int:
-        if self.total == 0:
-            return 0
-        return int((self.completed + self.failed) / self.total * 100)
+class EnrichPhaseData:
+    """Phase-keyed payload — keys appear as their phase completes."""
+    plan: Optional[EnrichPlan] = None
+    urls_per_entity: Optional[Dict[str, List[EnrichUrlCandidate]]] = None
+    fragments: Optional[List[Dict[str, Any]]] = None
+    rows: Optional[List[EnrichRow]] = None
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "EnrichJobProgress":
+    def from_dict(cls, data: Dict[str, Any]) -> "EnrichPhaseData":
+        plan = EnrichPlan.from_dict(data["plan"]) if data.get("plan") else None
+        urls_per_entity = None
+        if data.get("urls_per_entity"):
+            urls_per_entity = {
+                k: [EnrichUrlCandidate.from_dict(c) for c in v]
+                for k, v in data["urls_per_entity"].items()
+            }
+        rows = None
+        if data.get("rows") is not None:
+            rows = [EnrichRow.from_dict(r) for r in data["rows"]]
         return cls(
-            total=data.get("total", 0),
-            completed=data.get("completed", 0),
-            failed=data.get("failed", 0),
+            plan=plan,
+            urls_per_entity=urls_per_entity,
+            fragments=data.get("fragments"),
+            rows=rows,
         )
 
 
 @dataclass
-class EnrichResponse:
-    """Response from POST /v1/enrich."""
-    job_id: str = ""
-    status: str = "pending"
-    urls_count: int = 0
-    schema_fields: int = 0
-    created_at: str = ""
+class EnrichProgress:
+    """URL- and group-level progress during extraction + merge."""
+    total_urls: int = 0
+    completed_urls: int = 0
+    failed_urls: int = 0
+    total_groups: int = 0
+    completed_groups: int = 0
+
+    @property
+    def percent(self) -> int:
+        if self.total_urls == 0:
+            return 0
+        return int((self.completed_urls + self.failed_urls) / self.total_urls * 100)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "EnrichResponse":
+    def from_dict(cls, data: Dict[str, Any]) -> "EnrichProgress":
         return cls(
-            job_id=data.get("job_id", ""),
-            status=data.get("status", "pending"),
-            urls_count=data.get("urls_count", 0),
-            schema_fields=data.get("schema_fields", 0),
-            created_at=data.get("created_at", ""),
+            total_urls=data.get("total_urls", 0),
+            completed_urls=data.get("completed_urls", 0),
+            failed_urls=data.get("failed_urls", 0),
+            total_groups=data.get("total_groups", 0),
+            completed_groups=data.get("completed_groups", 0),
+        )
+
+
+@dataclass
+class EnrichLlmBucket:
+    """LLM token usage for one purpose (plan_intent, url_plan, …)."""
+    input: int = 0
+    output: int = 0
+    model: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "EnrichLlmBucket":
+        return cls(
+            input=data.get("input", 0),
+            output=data.get("output", 0),
+            model=data.get("model"),
+        )
+
+
+@dataclass
+class EnrichUsage:
+    """Per-purpose usage envelope. Cost is computed cross-service via the
+    rate-card; this SDK only exposes the raw counts."""
+    crawls: int = 0
+    searches: int = 0
+    llm_tokens_by_purpose: Dict[str, EnrichLlmBucket] = field(default_factory=dict)
+    llm_totals: Dict[str, int] = field(default_factory=lambda: {"input": 0, "output": 0})
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "EnrichUsage":
+        buckets = {
+            k: EnrichLlmBucket.from_dict(v)
+            for k, v in (data.get("llm_tokens_by_purpose") or {}).items()
+        }
+        return cls(
+            crawls=data.get("crawls", 0),
+            searches=data.get("searches", 0),
+            llm_tokens_by_purpose=buckets,
+            llm_totals=dict(data.get("llm_totals") or {"input": 0, "output": 0}),
         )
 
 
 @dataclass
 class EnrichJobStatus:
-    """Polling response for GET /v1/enrich/jobs/{job_id}."""
+    """Returned from POST /v1/enrich/async and GET /v1/enrich/jobs/{id}.
+
+    `phase_data` grows monotonically as phases complete: `plan` appears
+    after `planning`, `urls_per_entity` after `resolving_urls`, `rows`
+    after `merging`. Use `is_complete` / `is_paused` to drive control flow.
+    """
     job_id: str = ""
-    status: str = "pending"
-    progress: EnrichJobProgress = field(default_factory=EnrichJobProgress)
-    progress_percent: int = 0
-    rows: Optional[List[EnrichRow]] = None
+    status: str = "queued"
+    phase_data: EnrichPhaseData = field(default_factory=EnrichPhaseData)
+    progress: EnrichProgress = field(default_factory=EnrichProgress)
+    usage: EnrichUsage = field(default_factory=EnrichUsage)
+    auto_confirm_plan: bool = True
+    auto_confirm_urls: bool = True
     created_at: Optional[str] = None
     started_at: Optional[str] = None
+    paused_at: Optional[str] = None
     completed_at: Optional[str] = None
     error: Optional[str] = None
 
     @property
     def is_complete(self) -> bool:
-        return self.status in ("completed", "partial", "failed", "cancelled")
+        return self.status in ENRICH_TERMINAL_STATUSES
+
+    @property
+    def is_paused(self) -> bool:
+        return self.status in ENRICH_PAUSED_STATUSES
 
     @property
     def is_successful(self) -> bool:
         return self.status in ("completed", "partial")
 
+    @property
+    def plan(self) -> Optional[EnrichPlan]:
+        return self.phase_data.plan
+
+    @property
+    def urls_per_entity(self) -> Optional[Dict[str, List[EnrichUrlCandidate]]]:
+        return self.phase_data.urls_per_entity
+
+    @property
+    def rows(self) -> Optional[List[EnrichRow]]:
+        return self.phase_data.rows
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "EnrichJobStatus":
-        progress = EnrichJobProgress.from_dict(data.get("progress") or {})
-        rows = None
-        if data.get("rows") is not None:
-            rows = [EnrichRow.from_dict(r) for r in data["rows"]]
         return cls(
             job_id=data.get("job_id", ""),
-            status=data.get("status", "pending"),
-            progress=progress,
-            progress_percent=data.get("progress_percent", 0),
-            rows=rows,
+            status=data.get("status", "queued"),
+            phase_data=EnrichPhaseData.from_dict(data.get("phase_data") or {}),
+            progress=EnrichProgress.from_dict(data.get("progress") or {}),
+            usage=EnrichUsage.from_dict(data.get("usage") or {}),
+            auto_confirm_plan=bool(data.get("auto_confirm_plan", True)),
+            auto_confirm_urls=bool(data.get("auto_confirm_urls", True)),
             created_at=data.get("created_at"),
             started_at=data.get("started_at"),
+            paused_at=data.get("paused_at"),
             completed_at=data.get("completed_at"),
             error=data.get("error"),
+        )
+
+
+@dataclass
+class EnrichJobListItem:
+    """One row in the GET /v1/enrich/jobs list response."""
+    job_id: str = ""
+    status: str = "queued"
+    query_preview: Optional[str] = None
+    created_at: Optional[str] = None
+    completed_at: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "EnrichJobListItem":
+        return cls(
+            job_id=data.get("job_id", ""),
+            status=data.get("status", "queued"),
+            query_preview=data.get("query_preview"),
+            created_at=data.get("created_at"),
+            completed_at=data.get("completed_at"),
+        )
+
+
+@dataclass
+class EnrichEvent:
+    """One SSE event from `stream_enrich_job(...)`.
+
+    `type` is one of:
+      "snapshot" — initial full status (sent once on connect)
+      "phase"    — phase transition (status field set)
+      "fragment" — per-URL extraction completed (fragment field set)
+      "row"      — per-entity merged row completed (row field set)
+      "complete" — terminal status reached; iterator stops after this
+    """
+    type: str = ""
+    status: Optional[str] = None
+    snapshot: Optional[EnrichJobStatus] = None
+    fragment: Optional[Dict[str, Any]] = None
+    row: Optional[EnrichRow] = None
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, evt_type: str, data: Dict[str, Any]) -> "EnrichEvent":
+        snapshot = None
+        if evt_type == "snapshot":
+            snapshot = EnrichJobStatus.from_dict(data)
+        row = None
+        if data.get("row") is not None:
+            row = EnrichRow.from_dict(data["row"])
+        return cls(
+            type=evt_type,
+            status=data.get("status"),
+            snapshot=snapshot,
+            fragment=data.get("fragment"),
+            row=row,
+            raw=data,
         )
 
 

@@ -134,40 +134,85 @@ for {
 }
 ```
 
-### Enrich URLs (build a data table)
+### Enrich v2 (build a data table)
+
+Multi-phase enrichment. Give a brief, a list of entities, or a list of URLs. The job walks through `planning → resolving_urls → extracting → merging`, with optional human-review pauses at `plan_ready` and `urls_ready`.
 
 ```go
-result, err := crawler.Enrich(
-    []string{"https://kidocode.com", "https://brightchamps.com"},
-    []crawl4ai.EnrichFieldSpec{
-        {Name: "Company Name"},
-        {Name: "Email", Description: "primary contact email"},
-        {Name: "Phone", Description: "phone number"},
-    },
-    &crawl4ai.EnrichOptions{
-        MaxDepth:     1,
-        EnableSearch: true,
-        Wait:         true,
-        Timeout:      120 * time.Second,
-    },
+import (
+    "context"
+    "fmt"
+    "time"
+    "github.com/unclecode/crawl4ai-cloud-sdk/go/pkg/crawl4ai"
 )
-if err != nil {
-    log.Fatal(err)
-}
 
-for _, row := range result.Rows {
-    fmt.Printf("%s: %v\n", row.URL, row.Fields)
-    for field, src := range row.Sources {
-        fmt.Printf("  %s: %s from %s\n", field, src.Method, src.URL)
+// 1. Agent one-shot — give a brief, get a table back
+result, err := crawler.Enrich(&crawl4ai.EnrichOptions{
+    Query:         "licensed nurseries in North York Toronto with extended hours",
+    Country:       "ca",
+    TopKPerEntity: 3,
+    Wait:          true,
+    Timeout:       5 * time.Minute,
+})
+if err != nil { log.Fatal(err) }
+for _, row := range result.PhaseData.Rows {
+    fmt.Printf("%v: %v\n", row.InputKey, row.Fields)
+    for field, c := range row.Certainty {
+        fmt.Printf("  %s: %.2f  (from %s)\n", field, c, row.Sources[field]["url"])
+    }
+}
+fmt.Printf("crawls=%d searches=%d llm=%v\n",
+    result.Usage.Crawls, result.Usage.Searches, result.Usage.LlmTotals)
+
+// 2. Pre-resolved URLs — skip planning + URL resolution
+r2, _ := crawler.Enrich(&crawl4ai.EnrichOptions{
+    URLs:     []string{"https://example.com/a", "https://example.com/b"},
+    Features: []crawl4ai.EnrichFeature{{Name: "price"}, {Name: "hours"}},
+    Wait:     true,
+})
+
+// 3. Human review flow — pause for editing the plan
+falseVal := false
+trueVal := true
+job, _ := crawler.Enrich(&crawl4ai.EnrichOptions{
+    Query:           "best Italian restaurants in Brooklyn",
+    Country:         "us",
+    AutoConfirmPlan: &falseVal,
+    AutoConfirmURLs: &trueVal,
+    Wait:            false,
+})
+
+paused, _ := crawler.WaitEnrichJob(job.JobID, crawl4ai.WaitEnrichOptions{
+    Until:   crawl4ai.EnrichStatusPlanReady,
+    Timeout: 2 * time.Minute,
+})
+fmt.Println(paused.PhaseData.Plan.Entities, paused.PhaseData.Plan.Features)
+
+_, _ = crawler.ResumeEnrichJob(job.JobID, &crawl4ai.ResumeEnrichOptions{
+    Entities: []crawl4ai.EnrichEntity{{Name: "Lucali"}, {Name: "Roberta's"}},
+    Features: []crawl4ai.EnrichFeature{{Name: "address"}, {Name: "hours"}},
+})
+final, _ := crawler.WaitEnrichJob(job.JobID, crawl4ai.WaitEnrichOptions{Timeout: 5 * time.Minute})
+fmt.Println(final.Status, len(final.PhaseData.Rows))
+
+// 4. Live progress via SSE
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+defer cancel()
+events, _ := crawler.StreamEnrichJob(ctx, job.JobID)
+for evt := range events {
+    switch evt.Type {
+    case "phase":    fmt.Println("→", evt.Status)
+    case "row":      fmt.Println("✓", evt.Row.InputKey)
+    case "complete": return
     }
 }
 
-// Fire-and-forget + manual poll
-job, _ := crawler.Enrich(urls, schema, &crawl4ai.EnrichOptions{Wait: false})
-status, _ := crawler.GetEnrichJob(job.JobID)
+// Job management
 jobs, _ := crawler.ListEnrichJobs(5, 0)
 _ = crawler.CancelEnrichJob(job.JobID)
 ```
+
+**Vocabulary:** **entities** are row identifiers; **criteria** are search-side filters; **features** are extraction columns. **Per-purpose usage** is reported in `result.Usage.LlmTokensByPurpose` with five buckets: `plan_intent`, `url_plan`, `paywall_classify`, `extract`, `merge_tiebreak` (only buckets that ran appear).
 
 ## Wrapper API Reference
 
@@ -179,7 +224,7 @@ _ = crawler.CancelEnrichJob(job.JobID)
 | `Map(url, opts)` | `POST /v1/map` | `*MapResponse` | Simple URL discovery (always sync) |
 | `Scan(url, opts)` | `POST /v1/scan` | `*ScanResult` | **AI-assisted** URL discovery with plain-English criteria |
 | `CrawlSite(url, opts)` | `POST /v1/crawl/site` | `*SiteCrawlResponse` | **AI-assisted** whole-site crawl (always async) |
-| `Enrich(urls, schema, opts)` | `POST /v1/enrich` | `*EnrichJobStatus` | Per-URL data enrichment with depth + search |
+| `Enrich(opts)` | `POST /v1/enrich/async` | `*EnrichJobStatus` | Multi-phase enrichment from query / entities / URLs |
 
 Every wrapper method accepts `nil` for options to use sensible defaults.
 

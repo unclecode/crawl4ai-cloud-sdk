@@ -32,6 +32,29 @@ from .configs import (
 )
 
 
+# ─── Enrich vocabulary normalizers (string shortcuts) ────────────────
+
+def _normalize_entity(item: Union[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """Accept `"Toronto"` or `{"name": "...", "title": "...", "source_url": "..."}`."""
+    if isinstance(item, str):
+        return {"name": item}
+    return item
+
+
+def _normalize_criterion(item: Union[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """Accept `"Austin TX"` or `{"text": "...", "kind": "location"}`."""
+    if isinstance(item, str):
+        return {"text": item}
+    return item
+
+
+def _normalize_feature(item: Union[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """Accept `"price"` or `{"name": "...", "description": "..."}`."""
+    if isinstance(item, str):
+        return {"name": item}
+    return item
+
+
 class AsyncWebCrawler:
     """
     Async client for Crawl4AI Cloud API.
@@ -1658,113 +1681,299 @@ class AsyncWebCrawler:
         return await self._cancel_wrapper_job(job_id, "extract")
 
     # -------------------------------------------------------------------------
-    # Enrich
+    # Enrich (v2 multi-phase API)
     # -------------------------------------------------------------------------
 
     async def enrich(
         self,
-        urls: List[str],
-        schema: List[Dict[str, str]],
         *,
-        max_depth: int = 1,
-        max_links: int = 5,
-        enable_search: bool = False,
-        retry_count: int = 1,
-        strategy: str = "browser",
+        # Inputs (any subset; at least one of query / entities / urls)
+        query: Optional[str] = None,
+        entities: Optional[List[Union[str, Dict[str, Any]]]] = None,
+        criteria: Optional[List[Union[str, Dict[str, Any]]]] = None,
+        features: Optional[List[Union[str, Dict[str, Any]]]] = None,
+        urls: Optional[List[str]] = None,
+        groups: Optional[Dict[str, List[str]]] = None,
+        # Phase control
+        auto_confirm_plan: bool = True,
+        auto_confirm_urls: bool = True,
+        # Discover knobs
+        top_k_per_entity: int = 3,
+        search: bool = True,
+        country: Optional[str] = None,
+        location_hint: Optional[str] = None,
+        # Standard wrapper knobs
+        strategy: str = "http",
+        config: Optional[Dict[str, Any]] = None,
+        browser_config: Optional[Dict[str, Any]] = None,
+        crawler_config: Optional[Dict[str, Any]] = None,
         llm_config: Optional[Dict[str, Any]] = None,
         proxy: Optional[Union[str, Dict[str, Any], "ProxyConfig"]] = None,
         webhook_url: Optional[str] = None,
         priority: int = 5,
+        # Polling control
         wait: bool = True,
         poll_interval: float = 3.0,
         timeout: Optional[float] = 600.0,
     ) -> "EnrichJobStatus":
-        """
-        Enrich a list of URLs by extracting specified fields.
+        """Create a multi-phase enrichment job.
 
-        Each URL becomes a row in the output table. The pipeline crawls each URL,
-        follows links to find missing fields, and optionally searches Google.
+        The phase machine:
+            queued → planning → plan_ready → resolving_urls → urls_ready
+                  → extracting → merging → completed
+
+        Defaults (`auto_confirm_plan=True`, `auto_confirm_urls=True`) make
+        the worker run the full pipeline in one shot — best for agents and
+        scripts. Set either flag to False for human-in-loop review and
+        resume via `resume_enrich_job(...)`.
+
+        At least one of `query`, `entities`, or `urls` must be supplied.
+        The starting phase is inferred from what you pass:
+            query                          → planning
+            query + entities + features    → resolving_urls
+            urls (+ optional groups)       → extracting
 
         Args:
-            urls: URLs to enrich (1-100).
-            schema: Fields to extract. Each is {"name": "...", "description": "..."}.
-            max_depth: Link-following depth (0=page only). Default 1.
-            max_links: Max sub-pages per depth level. Default 5.
-            enable_search: Fall back to Google Search for missing fields. Default False.
-            strategy: "browser" (default) or "http".
-            wait: If True (default), poll until job completes.
-            poll_interval: Seconds between polls. Default 3.
-            timeout: Max seconds to wait. Default 600.
+            query: Free-form brief to expand into entities/criteria/features.
+            entities: Pre-supplied row identifiers. Strings are wrapped as
+                `{"name": str}`; dicts pass through as-is.
+            criteria: Pre-supplied search-side filters (strings → text-only).
+            features: Extraction columns. Required unless `query` is set.
+                Strings → `{"name": str}`; dicts pass through.
+            urls: Skip URL resolution — extract directly from these.
+            groups: Pre-grouped URLs per entity (only valid with `urls`).
+            auto_confirm_plan: False → pause at `plan_ready` for review.
+            auto_confirm_urls: False → pause at `urls_ready` for review.
+            top_k_per_entity: URLs crawled per entity (1-10). Default 3.
+            search: Enable Serper grounding during plan expansion.
+            country: ISO-2 country code for Serper localization.
+            location_hint: City/region string for Serper localization.
+            strategy: Per-page crawl strategy: "http" (default) or "browser".
+            config: EnrichConfig overrides (max_depth, cross_source_verify, …).
+            wait: If True (default), poll until terminal status.
+            poll_interval: Seconds between polls when waiting.
+            timeout: Max seconds to wait.
 
         Returns:
-            EnrichJobStatus with rows containing extracted fields and sources.
+            EnrichJobStatus. When `wait=True`, status is terminal and
+            `phase_data.rows` is populated. When `wait=False`, returns
+            immediately with the initial status — poll with
+            `get_enrich_job(...)` or stream with `stream_enrich_job(...)`.
+
+        Examples:
+            # Agent one-shot
+            result = await crawler.enrich(
+                query="licensed nurseries in North York Toronto",
+                country="ca",
+            )
+            for row in result.rows:
+                print(row.input_key, row.fields)
+
+            # Pre-resolved URLs
+            result = await crawler.enrich(
+                urls=["https://example.com/a", "https://example.com/b"],
+                features=["price", "hours"],
+            )
+
+            # Human review flow
+            job = await crawler.enrich(
+                query="top US BBQ joints",
+                auto_confirm_plan=False,
+                auto_confirm_urls=False,
+                wait=False,
+            )
+            job = await crawler.wait_enrich_job(job.job_id, until="plan_ready")
+            # ...edit job.plan...
+            await crawler.resume_enrich_job(job.job_id, features=edited)
         """
-        from crawl4ai_cloud.models import EnrichResponse, EnrichJobStatus
+        from crawl4ai_cloud.models import EnrichJobStatus
 
         body: Dict[str, Any] = {
-            "urls": urls,
-            "schema": schema,
-            "config": {
-                "max_depth": max_depth,
-                "max_links": max_links,
-                "enable_search": enable_search,
-                "retry_count": retry_count,
-            },
+            "auto_confirm_plan": auto_confirm_plan,
+            "auto_confirm_urls": auto_confirm_urls,
+            "top_k_per_entity": top_k_per_entity,
+            "search": search,
             "strategy": strategy,
             "priority": priority,
         }
-        if llm_config:
+        if query is not None:
+            body["query"] = query
+        if entities is not None:
+            body["entities"] = [_normalize_entity(e) for e in entities]
+        if criteria is not None:
+            body["criteria"] = [_normalize_criterion(c) for c in criteria]
+        if features is not None:
+            body["features"] = [_normalize_feature(f) for f in features]
+        if urls is not None:
+            body["urls"] = urls
+        if groups is not None:
+            body["groups"] = groups
+        if country is not None:
+            body["country"] = country
+        if location_hint is not None:
+            body["location_hint"] = location_hint
+        if config is not None:
+            body["config"] = config
+        if browser_config is not None:
+            body["browser_config"] = browser_config
+        if crawler_config is not None:
+            body["crawler_config"] = crawler_config
+        if llm_config is not None:
             body["llm_config"] = llm_config
-        if proxy:
+        if proxy is not None:
             body["proxy"] = normalize_proxy(proxy)
-        if webhook_url:
+        if webhook_url is not None:
             body["webhook_url"] = webhook_url
 
-        data = await self._http.request("POST", "/v1/enrich", json=body)
-        resp = EnrichResponse.from_dict(data)
-
+        data = await self._http.request("POST", "/v1/enrich/async", json=body)
+        # POST returns the create envelope (job_id, status, created_at).
+        # Re-fetch the full status if we're going to wait, otherwise return
+        # the create envelope wrapped in EnrichJobStatus.
+        job = EnrichJobStatus.from_dict(data)
         if wait:
-            return await self._wait_enrich_job(resp.job_id, poll_interval, timeout)
-
-        # Return minimal status when not waiting
-        return EnrichJobStatus(
-            job_id=resp.job_id,
-            status=resp.status,
-            created_at=resp.created_at,
-        )
+            return await self.wait_enrich_job(
+                job.job_id, poll_interval=poll_interval, timeout=timeout,
+            )
+        return job
 
     async def get_enrich_job(self, job_id: str) -> "EnrichJobStatus":
-        """Poll an enrichment job for status and completed rows."""
+        """Fetch the current status of an enrichment job — one poll, no wait."""
         from crawl4ai_cloud.models import EnrichJobStatus
         data = await self._http.request("GET", f"/v1/enrich/jobs/{job_id}")
         return EnrichJobStatus.from_dict(data)
 
-    async def list_enrich_jobs(self, limit: int = 20, offset: int = 0) -> List["EnrichJobStatus"]:
-        """List enrichment jobs for the authenticated user."""
-        from crawl4ai_cloud.models import EnrichJobStatus
-        data = await self._http.request("GET", "/v1/enrich/jobs", params={"limit": limit, "offset": offset})
-        return [EnrichJobStatus.from_dict(j) for j in data.get("jobs", [])]
-
-    async def cancel_enrich_job(self, job_id: str) -> bool:
-        """Cancel an enrichment job."""
-        await self._http.request("DELETE", f"/v1/enrich/jobs/{job_id}")
-        return True
-
-    async def _wait_enrich_job(
-        self, job_id: str, poll_interval: float = 3.0, timeout: Optional[float] = None,
+    async def wait_enrich_job(
+        self,
+        job_id: str,
+        *,
+        until: Optional[str] = None,
+        poll_interval: float = 3.0,
+        timeout: Optional[float] = 600.0,
     ) -> "EnrichJobStatus":
-        """Poll /v1/enrich/jobs/{id} until the job finishes."""
+        """Poll an enrichment job until it reaches `until` or a terminal status.
+
+        Args:
+            job_id: Job to poll.
+            until: Phase to stop at — one of `plan_ready`, `urls_ready`,
+                `extracting`, `merging`, `completed`. Default None → wait
+                for any terminal status.
+            poll_interval: Seconds between polls. Default 3.
+            timeout: Max seconds to wait. Default 600.
+
+        Returns:
+            EnrichJobStatus at or past the requested phase.
+
+        Raises:
+            TimeoutError: If the deadline elapses before the status is reached.
+        """
+        from crawl4ai_cloud.models import EnrichJobStatus, ENRICH_TERMINAL_STATUSES
+
         start = time.time()
+        target = until or "completed"
         while True:
             job = await self.get_enrich_job(job_id)
             if job.is_complete:
                 return job
+            if until is not None and job.status == until:
+                return job
+            # Treat paused phases as a stop condition when the caller asked
+            # for a downstream phase that requires /continue to advance.
+            if until is not None and job.status in ("plan_ready", "urls_ready"):
+                if until == job.status:
+                    return job
+                # If user asked for a phase that comes AFTER a pause and
+                # auto_confirm is False, surface the pause instead of
+                # spinning until timeout.
+                if (job.status == "plan_ready" and not job.auto_confirm_plan) or (
+                    job.status == "urls_ready" and not job.auto_confirm_urls
+                ):
+                    return job
             if timeout and (time.time() - start) > timeout:
                 raise TimeoutError(
-                    f"Enrich job {job_id} did not complete within {timeout}s. "
-                    f"Status: {job.status}, progress: {job.progress.completed}/{job.progress.total}"
+                    f"Enrich job {job_id} did not reach '{target}' within {timeout}s. "
+                    f"Current status: {job.status}, progress: "
+                    f"{job.progress.completed_urls}/{job.progress.total_urls}"
                 )
             await asyncio.sleep(poll_interval)
+
+    async def resume_enrich_job(
+        self,
+        job_id: str,
+        *,
+        entities: Optional[List[Union[str, Dict[str, Any]]]] = None,
+        criteria: Optional[List[Union[str, Dict[str, Any]]]] = None,
+        features: Optional[List[Union[str, Dict[str, Any]]]] = None,
+        groups: Optional[Dict[str, List[str]]] = None,
+    ) -> "EnrichJobStatus":
+        """Advance a paused job (`plan_ready` or `urls_ready`) to the next phase.
+
+        Pass any subset of edits to apply before resuming. An empty body
+        ({}) is valid — means "resume with the server's current values".
+
+        At `plan_ready`: edits to `entities` / `criteria` / `features`.
+        At `urls_ready`: edits to `groups`.
+        """
+        from crawl4ai_cloud.models import EnrichJobStatus
+
+        body: Dict[str, Any] = {}
+        if entities is not None:
+            body["entities"] = [_normalize_entity(e) for e in entities]
+        if criteria is not None:
+            body["criteria"] = [_normalize_criterion(c) for c in criteria]
+        if features is not None:
+            body["features"] = [_normalize_feature(f) for f in features]
+        if groups is not None:
+            body["groups"] = groups
+
+        data = await self._http.request(
+            "POST", f"/v1/enrich/jobs/{job_id}/continue", json=body,
+        )
+        return EnrichJobStatus.from_dict(data)
+
+    async def stream_enrich_job(self, job_id: str):
+        """Subscribe to the SSE stream for an enrichment job.
+
+        Yields `EnrichEvent` objects until the stream closes (terminal
+        status) or the connection drops.
+
+        Event types:
+            "snapshot"  — initial full status (sent once on connect)
+            "phase"     — phase transition (event.status set)
+            "fragment"  — per-URL extraction completed (event.fragment set)
+            "row"       — per-entity merged row completed (event.row set)
+            "complete"  — terminal status reached; iterator stops
+
+        Example:
+            async for event in crawler.stream_enrich_job(job_id):
+                if event.type == "row":
+                    print("✓", event.row.input_key)
+                elif event.type == "complete":
+                    break
+        """
+        from crawl4ai_cloud.models import EnrichEvent
+
+        async for evt_type, payload in self._http.stream_sse(
+            f"/v1/enrich/jobs/{job_id}/stream",
+        ):
+            yield EnrichEvent.from_dict(evt_type, payload)
+            if evt_type == "complete":
+                return
+
+    async def cancel_enrich_job(self, job_id: str) -> bool:
+        """Cancel a running enrichment job. Returns True on success."""
+        await self._http.request("DELETE", f"/v1/enrich/jobs/{job_id}")
+        return True
+
+    async def list_enrich_jobs(
+        self, limit: int = 20, offset: int = 0,
+    ) -> List["EnrichJobListItem"]:
+        """List enrichment jobs for the authenticated user."""
+        from crawl4ai_cloud.models import EnrichJobListItem
+        data = await self._http.request(
+            "GET", "/v1/enrich/jobs",
+            params={"limit": limit, "offset": offset},
+        )
+        return [EnrichJobListItem.from_dict(j) for j in data.get("jobs", [])]
 
     # -------------------------------------------------------------------------
     # Context Manager

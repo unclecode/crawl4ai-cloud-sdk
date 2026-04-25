@@ -1117,175 +1117,305 @@ export function isWrapperJobComplete(job: WrapperJob): boolean {
 
 
 // =============================================================================
-// Enrich API Types
+// Enrich v2 — multi-phase API
 // =============================================================================
+//
+// queued → planning → plan_ready → resolving_urls → urls_ready
+//        → extracting → merging → completed | partial | failed | cancelled
+//
+// Default flags `autoConfirmPlan=true, autoConfirmUrls=true` make jobs run
+// straight through. Set either to false to pause for review and resume via
+// `crawler.resumeEnrichJob(...)`.
 
-/**
- * Source attribution for a single enriched field.
- */
-export interface EnrichFieldSource {
-  url: string;
-  method: string; // "direct", "depth", "search"
+export type EnrichStatus =
+  | 'queued' | 'planning' | 'plan_ready'
+  | 'resolving_urls' | 'urls_ready'
+  | 'extracting' | 'merging'
+  | 'completed' | 'partial' | 'failed' | 'cancelled';
+
+export const ENRICH_TERMINAL_STATUSES: EnrichStatus[] = [
+  'completed', 'partial', 'failed', 'cancelled',
+];
+export const ENRICH_PAUSED_STATUSES: EnrichStatus[] = ['plan_ready', 'urls_ready'];
+
+/** Row identifier (proper noun). */
+export interface EnrichEntity {
+  name: string;
+  title?: string;
+  sourceUrl?: string;
 }
 
-/**
- * Citation for a field found via search fallback.
- */
-export interface EnrichSearchCitation {
-  field: string;
-  sourceUrl: string;
-  sourceTitle: string;
+/** Search-side filter used when finding URLs per entity. */
+export interface EnrichCriterion {
+  text: string;
+  kind?: 'location' | 'filter' | 'other';
+}
+
+/** Extraction column — one field per crawled page. */
+export interface EnrichFeature {
+  name: string;
+  description?: string;
+}
+
+/** LLM-expanded plan (entities + criteria + features) for a query. */
+export interface EnrichPlan {
+  entities: EnrichEntity[];
+  criteria: EnrichCriterion[];
+  features: EnrichFeature[];
+  assistantMessage: string;
+  queriesUsed: string[];
+}
+
+/** One URL found for an entity by Serper grounding. */
+export interface EnrichUrlCandidate {
+  url: string;
+  rank: number;
+  domainTier: number;
+  title: string;
   queryUsed: string;
+  requiresAuth: boolean;
 }
 
-/**
- * Result for a single URL in an enrichment job.
- */
+/** One merged row in the enrichment table. */
 export interface EnrichRow {
-  url: string;
+  groupId: string;
+  inputKey: string | null;
+  url: string | null;
   fields: Record<string, unknown>;
-  missing: string[];
-  sources: Record<string, EnrichFieldSource>;
-  searchCitations: EnrichSearchCitation[];
-  status: string; // "complete", "partial", "failed", "pending"
-  depthUsed: number;
-  searchUsed: boolean;
-  tokenUsage?: Record<string, number>;
-  durationMs: number;
+  sources: Record<string, Record<string, unknown>>;
+  certainty: Record<string, number>;
+  disputed: string[];
+  fragmentsUsed: number;
+  status: string;            // "complete" | "partial" | "failed"
   error?: string;
 }
 
-/**
- * Progress for an enrichment job.
- */
-export interface EnrichJobProgress {
-  total: number;
-  completed: number;
-  failed: number;
+/** Phase-keyed payload — keys appear as their phase completes. */
+export interface EnrichPhaseData {
+  plan?: EnrichPlan;
+  urlsPerEntity?: Record<string, EnrichUrlCandidate[]>;
+  fragments?: Record<string, unknown>[];
+  rows?: EnrichRow[];
 }
 
-/**
- * Response from POST /v1/enrich.
- */
-export interface EnrichResponse {
-  jobId: string;
-  status: string;
-  urlsCount: number;
-  schemaFields: number;
-  createdAt: string;
+/** URL- and group-level progress during extraction + merge. */
+export interface EnrichProgress {
+  totalUrls: number;
+  completedUrls: number;
+  failedUrls: number;
+  totalGroups: number;
+  completedGroups: number;
 }
 
-/**
- * Polling response for GET /v1/enrich/jobs/{job_id}.
- */
+/** LLM token usage for one purpose (plan_intent, url_plan, …). */
+export interface EnrichLlmBucket {
+  input: number;
+  output: number;
+  model?: string;
+}
+
+/** Per-purpose usage envelope. */
+export interface EnrichUsage {
+  crawls: number;
+  searches: number;
+  llmTokensByPurpose: Record<string, EnrichLlmBucket>;
+  llmTotals: { input: number; output: number };
+}
+
+/** Returned from POST /v1/enrich/async and GET /v1/enrich/jobs/{id}. */
 export interface EnrichJobStatus {
   jobId: string;
-  status: string;
-  progress: EnrichJobProgress;
-  progressPercent: number;
-  rows?: EnrichRow[];
+  status: EnrichStatus;
+  phaseData: EnrichPhaseData;
+  progress: EnrichProgress;
+  usage: EnrichUsage;
+  autoConfirmPlan: boolean;
+  autoConfirmUrls: boolean;
   createdAt?: string;
   startedAt?: string;
+  pausedAt?: string;
   completedAt?: string;
   error?: string;
 }
 
-/**
- * Create EnrichResponse from API response.
- */
-export function enrichResponseFromDict(data: Record<string, unknown>): EnrichResponse {
+/** One row in the GET /v1/enrich/jobs list response. */
+export interface EnrichJobListItem {
+  jobId: string;
+  status: EnrichStatus;
+  queryPreview?: string;
+  createdAt?: string;
+  completedAt?: string;
+}
+
+/** SSE event type from `streamEnrichJob`. */
+export type EnrichEventType = 'snapshot' | 'phase' | 'fragment' | 'row' | 'complete';
+
+/** One SSE event. */
+export interface EnrichEvent {
+  type: EnrichEventType;
+  status?: EnrichStatus;
+  snapshot?: EnrichJobStatus;
+  fragment?: Record<string, unknown>;
+  row?: EnrichRow;
+  raw: Record<string, unknown>;
+}
+
+// ─── Decoders ───────────────────────────────────────────────────────
+
+function entityFromDict(d: Record<string, unknown>): EnrichEntity {
   return {
-    jobId: (data.job_id || '') as string,
-    status: (data.status || 'pending') as string,
-    urlsCount: (data.urls_count || 0) as number,
-    schemaFields: (data.schema_fields || 0) as number,
-    createdAt: (data.created_at || '') as string,
+    name: (d.name || '') as string,
+    title: d.title as string | undefined,
+    sourceUrl: d.source_url as string | undefined,
   };
 }
 
-/**
- * Create EnrichRow from API response.
- */
-function enrichRowFromDict(data: Record<string, unknown>): EnrichRow {
-  const sources: Record<string, EnrichFieldSource> = {};
-  const rawSources = (data.sources || {}) as Record<string, unknown>;
-  for (const [fname, src] of Object.entries(rawSources)) {
-    if (src && typeof src === 'object') {
-      const s = src as Record<string, unknown>;
-      sources[fname] = {
-        url: (s.url || '') as string,
-        method: (s.method || '') as string,
-      };
-    } else {
-      sources[fname] = { url: '', method: '' };
+function criterionFromDict(d: Record<string, unknown>): EnrichCriterion {
+  return {
+    text: (d.text || '') as string,
+    kind: (d.kind || 'filter') as EnrichCriterion['kind'],
+  };
+}
+
+function featureFromDict(d: Record<string, unknown>): EnrichFeature {
+  return {
+    name: (d.name || '') as string,
+    description: d.description as string | undefined,
+  };
+}
+
+function planFromDict(d: Record<string, unknown>): EnrichPlan {
+  return {
+    entities: ((d.entities || []) as Record<string, unknown>[]).map(entityFromDict),
+    criteria: ((d.criteria || []) as Record<string, unknown>[]).map(criterionFromDict),
+    features: ((d.features || []) as Record<string, unknown>[]).map(featureFromDict),
+    assistantMessage: (d.assistant_message || '') as string,
+    queriesUsed: (d.queries_used || []) as string[],
+  };
+}
+
+function urlCandidateFromDict(d: Record<string, unknown>): EnrichUrlCandidate {
+  return {
+    url: (d.url || '') as string,
+    rank: (d.rank || 0) as number,
+    domainTier: (d.domain_tier ?? 0.5) as number,
+    title: (d.title || '') as string,
+    queryUsed: (d.query_used || '') as string,
+    requiresAuth: Boolean(d.requires_auth),
+  };
+}
+
+export function enrichRowFromDict(d: Record<string, unknown>): EnrichRow {
+  return {
+    groupId: (d.group_id || '') as string,
+    inputKey: (d.input_key as string | null) ?? null,
+    url: (d.url as string | null) ?? null,
+    fields: (d.fields || {}) as Record<string, unknown>,
+    sources: (d.sources || {}) as Record<string, Record<string, unknown>>,
+    certainty: (d.certainty || {}) as Record<string, number>,
+    disputed: (d.disputed || []) as string[],
+    fragmentsUsed: (d.fragments_used ?? 1) as number,
+    status: (d.status || 'complete') as string,
+    error: d.error as string | undefined,
+  };
+}
+
+function phaseDataFromDict(d: Record<string, unknown>): EnrichPhaseData {
+  const out: EnrichPhaseData = {};
+  if (d.plan) out.plan = planFromDict(d.plan as Record<string, unknown>);
+  if (d.urls_per_entity) {
+    const upe: Record<string, EnrichUrlCandidate[]> = {};
+    for (const [k, v] of Object.entries(d.urls_per_entity as Record<string, unknown>)) {
+      upe[k] = (v as Record<string, unknown>[]).map(urlCandidateFromDict);
     }
+    out.urlsPerEntity = upe;
   }
-
-  const citations: EnrichSearchCitation[] = [];
-  const rawCitations = (data.search_citations || []) as Record<string, unknown>[];
-  for (const c of rawCitations) {
-    citations.push({
-      field: (c.field || '') as string,
-      sourceUrl: (c.source_url || '') as string,
-      sourceTitle: (c.source_title || '') as string,
-      queryUsed: (c.query_used || '') as string,
-    });
+  if (d.fragments) out.fragments = d.fragments as Record<string, unknown>[];
+  if (d.rows !== undefined && d.rows !== null) {
+    out.rows = (d.rows as Record<string, unknown>[]).map(enrichRowFromDict);
   }
+  return out;
+}
 
+function progressFromDict(d: Record<string, unknown>): EnrichProgress {
   return {
-    url: (data.url || '') as string,
-    fields: (data.fields || {}) as Record<string, unknown>,
-    missing: (data.missing || []) as string[],
-    sources,
-    searchCitations: citations,
-    status: (data.status || 'pending') as string,
-    depthUsed: (data.depth_used || 0) as number,
-    searchUsed: (data.search_used || false) as boolean,
-    tokenUsage: data.token_usage as Record<string, number> | undefined,
-    durationMs: (data.duration_ms || 0) as number,
-    error: data.error as string | undefined,
+    totalUrls: (d.total_urls || 0) as number,
+    completedUrls: (d.completed_urls || 0) as number,
+    failedUrls: (d.failed_urls || 0) as number,
+    totalGroups: (d.total_groups || 0) as number,
+    completedGroups: (d.completed_groups || 0) as number,
   };
 }
 
-/**
- * Create EnrichJobStatus from API response.
- */
-export function enrichJobStatusFromDict(data: Record<string, unknown>): EnrichJobStatus {
-  const progressData = (data.progress || {}) as Record<string, unknown>;
-  const progress: EnrichJobProgress = {
-    total: (progressData.total || 0) as number,
-    completed: (progressData.completed || 0) as number,
-    failed: (progressData.failed || 0) as number,
-  };
-
-  let rows: EnrichRow[] | undefined;
-  if (data.rows !== undefined && data.rows !== null) {
-    rows = (data.rows as Record<string, unknown>[]).map(enrichRowFromDict);
-  }
-
+function llmBucketFromDict(d: Record<string, unknown>): EnrichLlmBucket {
   return {
-    jobId: (data.job_id || '') as string,
-    status: (data.status || 'pending') as string,
-    progress,
-    progressPercent: (data.progress_percent || 0) as number,
-    rows,
-    createdAt: data.created_at as string | undefined,
-    startedAt: data.started_at as string | undefined,
-    completedAt: data.completed_at as string | undefined,
-    error: data.error as string | undefined,
+    input: (d.input || 0) as number,
+    output: (d.output || 0) as number,
+    model: d.model as string | undefined,
   };
 }
 
-/**
- * True when an enrich job has reached a terminal state.
- */
+function usageFromDictEnrich(d: Record<string, unknown>): EnrichUsage {
+  const buckets: Record<string, EnrichLlmBucket> = {};
+  const raw = (d.llm_tokens_by_purpose || {}) as Record<string, unknown>;
+  for (const [k, v] of Object.entries(raw)) {
+    buckets[k] = llmBucketFromDict(v as Record<string, unknown>);
+  }
+  const totals = (d.llm_totals || { input: 0, output: 0 }) as { input: number; output: number };
+  return {
+    crawls: (d.crawls || 0) as number,
+    searches: (d.searches || 0) as number,
+    llmTokensByPurpose: buckets,
+    llmTotals: { input: totals.input || 0, output: totals.output || 0 },
+  };
+}
+
+export function enrichJobStatusFromDict(d: Record<string, unknown>): EnrichJobStatus {
+  return {
+    jobId: (d.job_id || '') as string,
+    status: (d.status || 'queued') as EnrichStatus,
+    phaseData: phaseDataFromDict((d.phase_data || {}) as Record<string, unknown>),
+    progress: progressFromDict((d.progress || {}) as Record<string, unknown>),
+    usage: usageFromDictEnrich((d.usage || {}) as Record<string, unknown>),
+    autoConfirmPlan: d.auto_confirm_plan !== false,
+    autoConfirmUrls: d.auto_confirm_urls !== false,
+    createdAt: d.created_at as string | undefined,
+    startedAt: d.started_at as string | undefined,
+    pausedAt: d.paused_at as string | undefined,
+    completedAt: d.completed_at as string | undefined,
+    error: d.error as string | undefined,
+  };
+}
+
+export function enrichJobListItemFromDict(d: Record<string, unknown>): EnrichJobListItem {
+  return {
+    jobId: (d.job_id || '') as string,
+    status: (d.status || 'queued') as EnrichStatus,
+    queryPreview: d.query_preview as string | undefined,
+    createdAt: d.created_at as string | undefined,
+    completedAt: d.completed_at as string | undefined,
+  };
+}
+
+export function enrichEventFromDict(
+  evtType: string, payload: Record<string, unknown>,
+): EnrichEvent {
+  const out: EnrichEvent = { type: evtType as EnrichEventType, raw: payload };
+  if (evtType === 'snapshot') out.snapshot = enrichJobStatusFromDict(payload);
+  if (payload.status) out.status = payload.status as EnrichStatus;
+  if (payload.row) out.row = enrichRowFromDict(payload.row as Record<string, unknown>);
+  if (payload.fragment) out.fragment = payload.fragment as Record<string, unknown>;
+  return out;
+}
+
 export function isEnrichJobComplete(job: EnrichJobStatus): boolean {
-  return ['completed', 'partial', 'failed', 'cancelled'].includes(job.status);
+  return ENRICH_TERMINAL_STATUSES.includes(job.status);
 }
 
-/**
- * True when an enrich job completed successfully (with or without partial results).
- */
+export function isEnrichJobPaused(job: EnrichJobStatus): boolean {
+  return ENRICH_PAUSED_STATUSES.includes(job.status);
+}
+
 export function isEnrichJobSuccessful(job: EnrichJobStatus): boolean {
-  return ['completed', 'partial'].includes(job.status);
+  return job.status === 'completed' || job.status === 'partial';
 }

@@ -1,5 +1,14 @@
 /**
- * Enrich API E2E tests -- runs against stage.crawl4ai.com. No mocks.
+ * Enrich v2 E2E tests — runs against stage.crawl4ai.com.
+ *
+ * Covers the seven-method surface:
+ *    enrich(...)         POST /v1/enrich/async
+ *    getEnrichJob        GET  /v1/enrich/jobs/{id}
+ *    waitEnrichJob       poll loop, optional `until=` phase
+ *    resumeEnrichJob     POST /v1/enrich/jobs/{id}/continue
+ *    streamEnrichJob     GET  /v1/enrich/jobs/{id}/stream  (SSE)
+ *    cancelEnrichJob     DELETE /v1/enrich/jobs/{id}
+ *    listEnrichJobs      GET  /v1/enrich/jobs
  *
  * Usage:
  *    npx jest tests/enrich-e2e.test.ts --verbose
@@ -9,16 +18,15 @@ import {
   AsyncWebCrawler,
   EnrichJobStatus,
   EnrichRow,
-  EnrichFieldSource,
-  EnrichJobProgress,
+  EnrichEvent,
+  EnrichJobListItem,
   isEnrichJobComplete,
   isEnrichJobSuccessful,
-  enrichJobStatusFromDict,
 } from '../src';
 
 const API_KEY =
   process.env.CRAWL4AI_API_KEY ||
-  'sk_live_cM9VqS3ostZxB0FcjBZScbVnbk_Zni707mxU-uZWJKQ';
+  'sk_live_V89kxHtmkxw0jJORu_sWzyuvGw6TKHaJhoNGK8gGdqU';
 const BASE_URL =
   process.env.CRAWL4AI_BASE_URL || 'https://stage.crawl4ai.com';
 
@@ -32,183 +40,176 @@ afterAll(async () => {
   await crawler.close();
 });
 
-// =============================================================================
-// CORE ENRICHMENT
-// =============================================================================
+// ─── 1. URLs-only mode (fastest path) ────────────────────────────────
 
-describe('Enrich - Happy Path', () => {
-  test('basic enrich (1 URL, 2 fields, depth 0)', async () => {
-    const result = await crawler.enrich(
-      ['https://kidocode.com'],
-      [
-        { name: 'Company Name' },
-        { name: 'Email', description: 'contact email' },
+describe('Enrich v2 — URLs-only', () => {
+  test('single URL + two features', async () => {
+    const result = await crawler.enrich({
+      urls: ['https://kidocode.com'],
+      features: [
+        { name: 'company_name' },
+        { name: 'contact_email', description: 'primary contact email' },
       ],
-      { maxDepth: 0, enableSearch: false, strategy: 'browser', timeout: 120 },
-    );
-
-    expect(result.jobId).toBeTruthy();
+      strategy: 'http',
+      wait: true,
+      timeout: 180,
+    });
     expect(isEnrichJobComplete(result)).toBe(true);
     expect(isEnrichJobSuccessful(result)).toBe(true);
-    expect(result.rows).toBeDefined();
-    expect(result.rows!.length).toBe(1);
 
-    const row = result.rows![0];
-    expect(row.url).toBe('https://kidocode.com');
-    expect(row.fields['Company Name']).toBeTruthy();
-    expect(['complete', 'partial']).toContain(row.status);
-    expect(row.depthUsed).toBe(0);
-  }, 180000);
+    const rows = result.phaseData.rows;
+    expect(rows).toBeDefined();
+    expect(rows!.length).toBeGreaterThanOrEqual(1);
 
-  test('enrich with depth (1 URL, 3 fields, depth 1)', async () => {
-    const result = await crawler.enrich(
-      ['https://kidocode.com'],
-      [
-        { name: 'Company Name' },
-        { name: 'Email', description: 'primary contact email' },
-        { name: 'Phone', description: 'phone number' },
-      ],
-      { maxDepth: 1, maxLinks: 3, enableSearch: false, timeout: 120 },
-    );
+    const row = rows![0];
+    expect(row.url === 'https://kidocode.com' || row.groupId === 'https://kidocode.com').toBe(true);
+    expect(Object.keys(row.fields).length).toBeGreaterThan(0);
+    const hasCompany = Object.keys(row.fields).some(k => k.toLowerCase().startsWith('company'));
+    expect(hasCompany).toBe(true);
 
+    // Usage envelope sanity
+    expect(result.usage.crawls).toBeGreaterThanOrEqual(1);
+    expect(result.usage.llmTokensByPurpose.extract).toBeDefined();
+    expect(result.usage.llmTokensByPurpose.extract.input).toBeGreaterThan(0);
+    expect(result.usage.llmTokensByPurpose.extract.output).toBeGreaterThan(0);
+  }, 240_000);
+
+  test('string features shorthand', async () => {
+    const result = await crawler.enrich({
+      urls: ['https://example.com'],
+      features: ['title', 'description'],
+      strategy: 'http',
+      wait: true,
+      timeout: 120,
+    });
     expect(isEnrichJobComplete(result)).toBe(true);
-    expect(result.rows!.length).toBe(1);
-
-    const row = result.rows![0];
-    expect(row.fields['Company Name']).toBeTruthy();
-    // With depth 1, should find more fields
-    const found = Object.values(row.fields).filter((v) => v).length;
-    expect(found).toBeGreaterThanOrEqual(2);
-  }, 180000);
-
-  test('multiple URLs', async () => {
-    const result = await crawler.enrich(
-      ['https://kidocode.com', 'https://httpbin.org'],
-      [{ name: 'Title', description: 'page or company title' }],
-      { maxDepth: 0, enableSearch: false, timeout: 120 },
-    );
-
-    expect(isEnrichJobComplete(result)).toBe(true);
-    expect(result.progress.total).toBe(2);
-    expect(result.rows).toBeDefined();
-    expect(result.rows!.length).toBe(2);
-
-    const urls = new Set(result.rows!.map((r) => r.url));
-    expect(
-      urls.has('https://kidocode.com') || urls.has('https://httpbin.org'),
-    ).toBe(true);
-  }, 180000);
+    expect(result.phaseData.rows).toBeDefined();
+    expect(result.phaseData.rows!.length).toBeGreaterThanOrEqual(1);
+  }, 180_000);
 });
 
-// =============================================================================
-// SOURCE ATTRIBUTION
-// =============================================================================
+// ─── 2. Job lifecycle ────────────────────────────────────────────────
 
-describe('Enrich - Source Attribution', () => {
-  test('sources present for found fields', async () => {
-    const result = await crawler.enrich(
-      ['https://kidocode.com'],
-      [{ name: 'Company Name' }, { name: 'Email' }],
-      { maxDepth: 0, enableSearch: false, timeout: 120 },
-    );
+describe('Enrich v2 — Job lifecycle', () => {
+  test('fire-and-forget then getEnrichJob', async () => {
+    const job = await crawler.enrich({
+      urls: ['https://kidocode.com'],
+      features: [{ name: 'company_name' }],
+      strategy: 'http',
+      wait: false,
+    });
+    expect(job.jobId).toMatch(/^enr_/);
+    expect(['queued', 'extracting', 'merging', 'completed']).toContain(job.status);
 
-    const row = result.rows![0];
-    for (const [fieldName, value] of Object.entries(row.fields)) {
-      if (value) {
-        expect(row.sources[fieldName]).toBeDefined();
-        const src: EnrichFieldSource = row.sources[fieldName];
-        expect(['direct', 'depth', 'search']).toContain(src.method);
-        expect(src.url).toBeTruthy();
-      }
-    }
-  }, 180000);
-});
+    const latest = await crawler.getEnrichJob(job.jobId);
+    expect(latest.jobId).toBe(job.jobId);
+  }, 60_000);
 
-// =============================================================================
-// JOB MANAGEMENT
-// =============================================================================
+  test('waitEnrichJob until terminal', async () => {
+    const job = await crawler.enrich({
+      urls: ['https://example.com'],
+      features: [{ name: 'title' }],
+      strategy: 'http',
+      wait: false,
+    });
+    const terminal = await crawler.waitEnrichJob(job.jobId, { timeout: 120 });
+    expect(isEnrichJobComplete(terminal)).toBe(true);
+    expect(isEnrichJobSuccessful(terminal)).toBe(true);
+  }, 180_000);
 
-describe('Enrich - Job Management', () => {
-  test('fire and forget + manual poll', async () => {
-    const result = await crawler.enrich(
-      ['https://kidocode.com'],
-      [{ name: 'Company Name' }],
-      { maxDepth: 0, enableSearch: false, wait: false },
-    );
-
-    expect(result.jobId).toMatch(/^enr_/);
-    expect(result.status).toBe('pending');
-
-    // Poll until done
-    let status: EnrichJobStatus = result;
-    for (let i = 0; i < 30; i++) {
-      status = await crawler.getEnrichJob(result.jobId);
-      if (isEnrichJobComplete(status)) break;
-      await new Promise((r) => setTimeout(r, 2000));
-    }
-
-    expect(isEnrichJobComplete(status)).toBe(true);
-    expect(status.rows).toBeDefined();
-  }, 180000);
-
-  test('list jobs', async () => {
-    const jobs = await crawler.listEnrichJobs({ limit: 5 });
+  test('listEnrichJobs returns recent jobs', async () => {
+    const jobs: EnrichJobListItem[] = await crawler.listEnrichJobs({ limit: 5 });
     expect(Array.isArray(jobs)).toBe(true);
-    // We created jobs in earlier tests, so there should be at least one
     expect(jobs.length).toBeGreaterThanOrEqual(1);
-    expect(jobs[0].jobId).toBeTruthy();
-  }, 30000);
+    expect(jobs.every(j => j.jobId.startsWith('enr_'))).toBe(true);
+  }, 30_000);
 
-  test('cancel job', async () => {
-    const result = await crawler.enrich(
-      ['https://example.com', 'https://httpbin.org', 'https://kidocode.com'],
-      [
-        { name: 'Title' },
-        { name: 'Description', description: 'page description' },
-        { name: 'Email' },
-      ],
-      { maxDepth: 1, enableSearch: true, wait: false },
-    );
+  test('cancelEnrichJob mid-flight', async () => {
+    // Start a query-based job — slowest path so we have time to cancel
+    const job = await crawler.enrich({
+      query: 'top BBQ restaurants in Austin Texas with outdoor seating',
+      country: 'us',
+      topKPerEntity: 2,
+      wait: false,
+    });
+    expect(job.jobId).toMatch(/^enr_/);
 
-    expect(result.jobId).toMatch(/^enr_/);
-
-    // Cancel
-    const cancelled = await crawler.cancelEnrichJob(result.jobId);
+    const cancelled = await crawler.cancelEnrichJob(job.jobId);
     expect(cancelled).toBe(true);
 
-    // Verify cancelled
-    const status = await crawler.getEnrichJob(result.jobId);
-    expect(status.status).toBe('cancelled');
-  }, 60000);
+    await new Promise(r => setTimeout(r, 2000));
+    const latest = await crawler.getEnrichJob(job.jobId);
+    expect(latest.status).toBe('cancelled');
+  }, 60_000);
 });
 
-// =============================================================================
-// PROGRESS & TOKEN USAGE
-// =============================================================================
+// ─── 3. Review flow: pause + resume with edits ───────────────────────
 
-describe('Enrich - Progress & Token Usage', () => {
-  test('progress tracking', async () => {
-    const result = await crawler.enrich(
-      ['https://kidocode.com'],
-      [{ name: 'Company Name' }],
-      { maxDepth: 0, enableSearch: false, timeout: 120 },
-    );
+describe('Enrich v2 — Review flow', () => {
+  test('pause at plan_ready, then resume', async () => {
+    const job = await crawler.enrich({
+      query: 'best Italian restaurants in Brooklyn New York',
+      country: 'us',
+      topKPerEntity: 1,
+      autoConfirmPlan: false,   // pause here
+      autoConfirmUrls: true,    // run after we resume
+      wait: false,
+    });
 
-    expect(result.progress).toBeDefined();
-    expect(result.progress.total).toBe(1);
-    expect(result.progress.completed + result.progress.failed).toBe(1);
-    expect(result.progressPercent).toBe(100);
-  }, 180000);
+    const paused = await crawler.waitEnrichJob(job.jobId, {
+      until: 'plan_ready', timeout: 120,
+    });
+    expect(paused.status).toBe('plan_ready');
+    expect(paused.phaseData.plan).toBeDefined();
+    expect(paused.phaseData.plan!.entities.length).toBeGreaterThanOrEqual(1);
+    expect(paused.phaseData.plan!.features.length).toBeGreaterThanOrEqual(1);
+    expect(paused.usage.llmTokensByPurpose.plan_intent).toBeDefined();
 
-  test('token usage tracked per row', async () => {
-    const result = await crawler.enrich(
-      ['https://kidocode.com'],
-      [{ name: 'Company Name' }, { name: 'Email' }],
-      { maxDepth: 0, enableSearch: false, timeout: 120 },
-    );
+    // Trim entities + features so the rest of the pipeline is fast
+    const editedEntities = [{ name: paused.phaseData.plan!.entities[0].name }];
+    const editedFeatures = [{ name: 'address' }];
+    const resumed = await crawler.resumeEnrichJob(job.jobId, {
+      entities: editedEntities,
+      features: editedFeatures,
+    });
+    expect(resumed.status).not.toBe('plan_ready');
 
-    const row = result.rows![0];
-    expect(row.tokenUsage).toBeDefined();
-    expect(row.tokenUsage!['total_tokens']).toBeGreaterThan(0);
-  }, 180000);
+    const final = await crawler.waitEnrichJob(job.jobId, { timeout: 300 });
+    expect(isEnrichJobComplete(final)).toBe(true);
+    if (final.phaseData.rows) {
+      expect(final.phaseData.rows.length).toBeLessThanOrEqual(1);
+    }
+  }, 420_000);
+});
+
+// ─── 4. SSE streaming ────────────────────────────────────────────────
+
+describe('Enrich v2 — SSE stream', () => {
+  test('snapshot + complete events arrive', async () => {
+    const job = await crawler.enrich({
+      urls: ['https://example.com'],
+      features: [{ name: 'title' }],
+      strategy: 'http',
+      wait: false,
+    });
+
+    const seen: string[] = [];
+    const collect = (async () => {
+      for await (const event of crawler.streamEnrichJob(job.jobId)) {
+        seen.push(event.type);
+        if (event.type === 'snapshot') {
+          expect(event.snapshot).toBeDefined();
+          expect(event.snapshot!.jobId).toBe(job.jobId);
+        }
+        if (event.type === 'complete') return;
+      }
+    })();
+    await Promise.race([
+      collect,
+      new Promise((_, rej) => setTimeout(() => rej(new Error('stream timeout')), 120_000)),
+    ]);
+
+    expect(seen).toContain('snapshot');
+    expect(seen).toContain('complete');
+  }, 180_000);
 });

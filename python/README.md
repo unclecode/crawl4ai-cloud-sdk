@@ -63,7 +63,7 @@ asyncio.run(main())
 | `map(url)` | Simple URL discovery on a domain (always sync) | `POST /v1/map` |
 | `scan(url, criteria=...)` | **AI-assisted** URL discovery with plain-English criteria + map/deep routing | `POST /v1/scan` |
 | `crawl_site(url, criteria=..., extract=...)` | **AI-assisted** full site crawl -- LLM generates scan config + extraction schema | `POST /v1/crawl/site` |
-| `enrich(urls, schema)` | Build a data table from URLs -- per-URL enrichment with depth + search | `POST /v1/enrich` |
+| `enrich(query=…)` | Build a data table from a brief, list of entities, or list of URLs (multi-phase) | `POST /v1/enrich/async` |
 
 Each method returns a typed response object (`MarkdownResponse`, `ScreenshotResponse`, `ExtractResponse`, `MapResponse`, `ScanResult`, `SiteCrawlResponse`, `EnrichJobStatus`) with relevant status and data fields.
 
@@ -148,67 +148,77 @@ job = await crawler.crawl_site(
 
 **Drop markdown with `include`**: if you pass `include=["links", "media"]` without `"markdown"`, the worker force-strips markdown from every result -- saves bandwidth for extract-only crawls.
 
-### Enrich (v0.5.0)
+### Enrich v2 (v0.6.0)
 
-Build a data table from URLs. Define columns, provide URLs, and the pipeline crawls each URL, follows links to find missing fields, and optionally searches Google as a fallback.
+Multi-phase enrichment. Give a brief, a list of entities, or a list of URLs and get back a structured table with per-field provenance, certainty, and disputed-value markers.
+
+The job walks through phases: `queued → planning → plan_ready → resolving_urls → urls_ready → extracting → merging → completed`. Defaults `auto_confirm_plan=True, auto_confirm_urls=True` make it run straight through (one-shot). Set either to `False` for human-in-loop review and resume via `resume_enrich_job(...)`.
 
 ```python
 async with AsyncWebCrawler(api_key="sk_live_...") as crawler:
 
-    # Basic enrichment -- depth 0, no search
+    # 1. Agent one-shot — give a brief, get a table back
     result = await crawler.enrich(
-        urls=["https://kidocode.com", "https://brightchamps.com"],
-        schema=[
-            {"name": "Company Name"},
-            {"name": "Email", "description": "primary contact email"},
-            {"name": "Phone", "description": "phone number"},
-        ],
-        max_depth=0,
-        enable_search=False,
+        query="licensed nurseries in North York Toronto with extended hours",
+        country="ca",
+        top_k_per_entity=3,
     )
-
     for row in result.rows:
-        print(f"{row.url}: {row.fields}")
-        # Sources show where each field was found
-        for field, src in row.sources.items():
-            print(f"  {field}: {src.method} from {src.url}")
+        print(row.input_key, row.fields)
+        # certainty + sources are per-field
+        for f, c in row.certainty.items():
+            print(f"  {f}: {c:.2f}  (from {row.sources[f]['url']})")
+    print(f"Crawls: {result.usage.crawls}, Searches: {result.usage.searches}")
+    print(f"LLM totals: {result.usage.llm_totals}")
 
-    # With depth + search fallback
+    # 2. Pre-resolved URLs — skip planning + URL resolution
     result = await crawler.enrich(
-        urls=["https://brightchamps.com"],
-        schema=[
-            {"name": "Company Name"},
-            {"name": "Email"},
-            {"name": "Phone"},
-            {"name": "Address", "description": "HQ or office address"},
-        ],
-        max_depth=1,           # follow internal links
-        max_links=3,           # check up to 3 sub-pages
-        enable_search=True,    # Google Search fallback
+        urls=["https://example.com/a", "https://example.com/b"],
+        features=["price", "hours"],   # string shortcut: same as [{"name": "price"}, ...]
     )
 
-    row = result.rows[0]
-    print(f"Status: {row.status}")   # "complete", "partial", or "failed"
-    print(f"Missing: {row.missing}") # fields that couldn't be found
-
-    # Fire-and-forget + manual polling
+    # 3. Human review flow — pause for editing the plan
     job = await crawler.enrich(
-        urls=["https://example1.com", "https://example2.com"],
-        schema=[{"name": "Title"}],
-        wait=False,  # returns immediately with job_id
+        query="best Italian restaurants in Brooklyn",
+        country="us",
+        auto_confirm_plan=False,
+        auto_confirm_urls=False,
+        wait=False,
     )
-    print(f"Job: {job.job_id}")
 
-    # Poll
-    status = await crawler.get_enrich_job(job.job_id)
-    print(f"Progress: {status.progress.completed}/{status.progress.total}")
+    # Wait for the planning phase to land
+    job = await crawler.wait_enrich_job(job.job_id, until="plan_ready")
+    print(job.plan.entities, job.plan.features)
 
-    # List recent jobs
+    # Edit and resume — the server applies your edits then advances
+    await crawler.resume_enrich_job(
+        job.job_id,
+        entities=[{"name": "Lucali"}, {"name": "Roberta's"}],
+        features=[{"name": "address"}, {"name": "hours"}],
+    )
+
+    # Wait again for the URL-resolution pause, then resume to completion
+    job = await crawler.wait_enrich_job(job.job_id, until="urls_ready")
+    await crawler.resume_enrich_job(job.job_id)   # accept server's URL picks
+    final = await crawler.wait_enrich_job(job.job_id)
+
+    # 4. Live progress via SSE
+    async for event in crawler.stream_enrich_job(job.job_id):
+        if event.type == "phase":  print("→", event.status)
+        elif event.type == "row":  print("✓", event.row.input_key)
+        elif event.type == "complete": break
+
+    # Job management
     jobs = await crawler.list_enrich_jobs(limit=5)
-
-    # Cancel
     await crawler.cancel_enrich_job(job.job_id)
 ```
+
+**Vocabulary:**
+- **Entity** — one row identifier (e.g. `"Franklin Barbecue"`).
+- **Criterion** — a search-side filter when finding URLs per entity (`{"text": "Austin TX", "kind": "location"}`).
+- **Feature** — one extraction column read off each crawled page.
+
+**Per-purpose usage** is reported in `result.usage.llm_tokens_by_purpose` with five buckets: `plan_intent`, `url_plan`, `paywall_classify`, `extract`, `merge_tiebreak` (only buckets that ran appear).
 
 ## Async / Batch
 

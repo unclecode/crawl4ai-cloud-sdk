@@ -1,7 +1,8 @@
 """Internal HTTP client for Crawl4AI Cloud SDK."""
 import asyncio
+import json as json_module
 import os
-from typing import Optional, Dict, Any
+from typing import AsyncIterator, Optional, Dict, Any, Tuple
 
 import httpx
 
@@ -16,7 +17,7 @@ from .errors import (
     TimeoutError,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.6.0"
 
 DEFAULT_BASE_URL = "https://api.crawl4ai.com"
 DEFAULT_TIMEOUT = 120.0
@@ -176,6 +177,60 @@ class HTTPClient:
                 raise CloudError(f"Request failed: {e}")
 
         raise CloudError("Max retries exceeded")
+
+    async def stream_sse(
+        self,
+        path: str,
+        params: Optional[Dict[str, Any]] = None,
+        timeout: Optional[float] = None,
+    ) -> AsyncIterator[Tuple[str, Dict[str, Any]]]:
+        """Open an SSE connection and yield (event_type, parsed_data) pairs.
+
+        Skips heartbeat comments (lines starting with ':'). Stops when the
+        server closes the connection or sends an event with `event: complete`.
+        """
+        client = await self._get_client()
+        # SSE needs an open-ended timeout — let the server decide when to close.
+        request_timeout = httpx.Timeout(
+            connect=10.0, read=None, write=10.0, pool=10.0,
+        ) if timeout is None else httpx.Timeout(timeout)
+
+        async with client.stream(
+            "GET", path, params=params, timeout=request_timeout,
+            headers={"Accept": "text/event-stream"},
+        ) as response:
+            if response.status_code >= 400:
+                body = await response.aread()
+                detail = body.decode("utf-8", errors="replace") or f"HTTP {response.status_code}"
+                if response.status_code == 401:
+                    raise AuthenticationError(detail, 401, {}, {})
+                if response.status_code == 404:
+                    raise NotFoundError(detail, 404, {}, {})
+                raise CloudError(detail, response.status_code, {}, {})
+
+            event_name: Optional[str] = None
+            data_buf: list[str] = []
+            async for line in response.aiter_lines():
+                if line == "":
+                    # End of one event — dispatch
+                    if data_buf:
+                        raw = "\n".join(data_buf)
+                        try:
+                            parsed = json_module.loads(raw)
+                        except Exception:
+                            parsed = {"raw": raw}
+                        yield (event_name or "message", parsed)
+                    event_name = None
+                    data_buf = []
+                    continue
+                if line.startswith(":"):
+                    # Heartbeat comment
+                    continue
+                if line.startswith("event:"):
+                    event_name = line[6:].strip()
+                elif line.startswith("data:"):
+                    data_buf.append(line[5:].lstrip())
+                # Ignore other SSE field types (id, retry) — we don't reconnect.
 
     async def close(self):
         """Close the HTTP client."""

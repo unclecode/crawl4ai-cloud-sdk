@@ -12,7 +12,7 @@
  * ```
  */
 
-export const VERSION = '0.4.0';
+export const VERSION = '0.6.0';
 
 // Main crawler class
 export { AsyncWebCrawler } from './crawler';
@@ -48,13 +48,32 @@ export type {
   ExtractManyOptions,
   MapOptions,
   SiteCrawlOptions,
-  // Enrich API types
-  EnrichFieldSource,
-  EnrichSearchCitation,
+  // Enrich v2 types
+  EnrichStatus,
+  EnrichEntity,
+  EnrichCriterion,
+  EnrichFeature,
+  EnrichPlan,
+  EnrichUrlCandidate,
   EnrichRow,
-  EnrichJobProgress,
-  EnrichResponse,
+  EnrichPhaseData,
+  EnrichProgress,
+  EnrichLlmBucket,
+  EnrichUsage,
   EnrichJobStatus,
+  EnrichJobListItem,
+  EnrichEvent,
+  EnrichEventType,
+} from './models';
+export type {
+  // Crawler enrich method options (defined in crawler.ts)
+  EnrichOptions,
+  ResumeEnrichOptions,
+  WaitEnrichOptions,
+} from './crawler';
+export {
+  ENRICH_TERMINAL_STATUSES,
+  ENRICH_PAUSED_STATUSES,
 } from './models';
 
 // Configuration types and helpers
@@ -125,10 +144,13 @@ export {
   isSiteCrawlJobComplete,
   siteScanConfigToDict,
   siteExtractConfigToDict,
-  // Enrich helpers
-  enrichResponseFromDict,
+  // Enrich v2 helpers
   enrichJobStatusFromDict,
+  enrichJobListItemFromDict,
+  enrichRowFromDict,
+  enrichEventFromDict,
   isEnrichJobComplete,
+  isEnrichJobPaused,
   isEnrichJobSuccessful,
 } from './models';
 

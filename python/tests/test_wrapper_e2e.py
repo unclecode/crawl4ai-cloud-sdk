@@ -452,8 +452,11 @@ class TestAsyncLifecycle:
 
     @pytest.mark.asyncio
     async def test_extract_many(self, crawler):
+        # 0.7.0: extract_many takes a base url + optional extra_urls
+        # (was urls=[...]). The base URL acts as the schema template in
+        # css_schema mode.
         job = await crawler.extract_many(
-            ["https://example.com"], method="llm",
+            url="https://example.com", method="llm",
             query="summarize", wait=True, timeout=120,
         )
         assert job.is_complete

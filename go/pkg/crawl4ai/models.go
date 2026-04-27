@@ -404,7 +404,13 @@ func (r *ScanResult) IsAsync() bool {
 
 // ScanOptions configures a domain scan request.
 type ScanOptions struct {
-	Mode              string   `json:"mode,omitempty"` // "default" or "deep" — DomainMapper source depth
+	// Sources is the DomainMapper source depth: "primary" (sitemap+homepage+robots+RSS, ~2-15s)
+	// or "extended" (adds Wayback+CC+CRT, ~30-60s). Default: "primary".
+	Sources string `json:"sources,omitempty"`
+	// Mode is the legacy alias for Sources. "default" → "primary", "deep" → "extended".
+	//
+	// Deprecated: Use Sources. Will be removed in 0.8.0.
+	Mode              string   `json:"mode,omitempty"`
 	MaxUrls           int      `json:"max_urls,omitempty"`
 	IncludeSubdomains *bool    `json:"include_subdomains,omitempty"`
 	ExtractHead       *bool    `json:"extract_head,omitempty"`
@@ -1320,8 +1326,52 @@ type ExtractOptions struct {
 	BypassCache   bool                   `json:"bypass_cache,omitempty"`
 }
 
+// ScrapeAsyncOptions configures the async scrape (batch) method.
+type ScrapeAsyncOptions struct {
+	MarkdownOptions
+	WebhookURL   string        `json:"webhook_url,omitempty"`
+	Priority     int           `json:"priority,omitempty"`
+	Wait         bool          `json:"-"`
+	PollInterval time.Duration `json:"-"`
+	Timeout      time.Duration `json:"-"`
+}
+
+// ScreenshotAsyncOptions configures the async screenshot (batch) method.
+type ScreenshotAsyncOptions struct {
+	ScreenshotOptions
+	WebhookURL   string        `json:"webhook_url,omitempty"`
+	Priority     int           `json:"priority,omitempty"`
+	Wait         bool          `json:"-"`
+	PollInterval time.Duration `json:"-"`
+	Timeout      time.Duration `json:"-"`
+}
+
+// ExtractAsyncOptions configures the async extract method.
+//
+// The base url passed to ExtractAsync is the schema TEMPLATE in css_schema mode —
+// the server samples it, generates a schema once, then re-applies that schema
+// across every entry in ExtraURLs for free (no extra LLM calls per URL). In
+// method="llm" mode the base has no special role; every URL gets its own LLM call.
+type ExtractAsyncOptions struct {
+	ExtractOptions
+	// ExtraURLs are follower URLs that share the resolved strategy.
+	// Up to 99 (total ≤100 with the base url).
+	ExtraURLs    []string      `json:"extra_urls,omitempty"`
+	WebhookURL   string        `json:"webhook_url,omitempty"`
+	Priority     int           `json:"priority,omitempty"`
+	Wait         bool          `json:"-"`
+	PollInterval time.Duration `json:"-"`
+	Timeout      time.Duration `json:"-"`
+}
+
 // MapOptions configures the map method.
 type MapOptions struct {
+	// Sources is the DomainMapper source depth: "primary" (sitemap+homepage+robots+RSS, ~2-15s)
+	// or "extended" (adds Wayback+CC+CRT, ~30-60s). Default: "primary".
+	Sources string `json:"sources,omitempty"`
+	// Mode is the legacy alias for Sources. "default" → "primary", "deep" → "extended".
+	//
+	// Deprecated: Use Sources. Will be removed in 0.8.0.
 	Mode              string                 `json:"mode,omitempty"`
 	MaxURLs           *int                   `json:"max_urls,omitempty"`
 	IncludeSubdomains bool                   `json:"include_subdomains,omitempty"`

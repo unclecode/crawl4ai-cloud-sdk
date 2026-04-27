@@ -373,11 +373,13 @@ describe('Errors', () => {
     await expect(crawler.getMarkdownJob('job_doesnotexist000000')).rejects.toThrow();
   }, 15000);
 
-  test('extract auto batch rejected', async () => {
-    await expect(
-      crawler.extractMany(['https://example.com'], { method: 'auto' as any })
-    ).rejects.toThrow('AUTO');
-  }, 5000);
+  test('extractMany now uses url + extraUrls (was urls=[]) — AUTO accepted as of 0.7.0', async () => {
+    // Just confirm submission shape works; covered fully in v07-changes.test.ts.
+    const job = await crawler.extractMany('https://example.com', {
+      method: 'auto',
+    });
+    expect(job.jobId).toBeTruthy();
+  }, 30000);
 });
 
 // =============================================================================

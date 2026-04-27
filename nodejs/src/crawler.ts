@@ -451,10 +451,18 @@ export class AsyncWebCrawler {
   /**
    * Deep crawl - discover and crawl URLs from a starting point.
    */
+  /**
+   * @deprecated Targets the deprecated `/v1/crawl/deep` endpoint. Migrate to
+   * `crawler.scan({ scan: { mode: 'deep' } })` for URL discovery, then pipe to
+   * `scrapeMany()` / `extractMany()`. Will be removed in 0.8.0.
+   */
   async deepCrawl(
     url?: string,
     options: DeepCrawlOptions = {}
   ): Promise<DeepCrawlResult | CrawlJob> {
+    if (typeof process !== 'undefined' && process.emitWarning) {
+      process.emitWarning('crawler.deepCrawl() targets the deprecated /v1/crawl/deep endpoint. Migrate to scan() + scrapeMany()/extractMany().', 'DeprecationWarning');
+    }
     const {
       sourceJob,
       strategy = 'bfs',
@@ -679,8 +687,9 @@ export class AsyncWebCrawler {
     url: string,
     options: ScanOptions = {},
   ): Promise<ScanResult> {
+    let { sources = 'primary' } = options;
     const {
-      mode = 'default',
+      mode,
       maxUrls,
       includeSubdomains = true,
       extractHead = true,
@@ -696,9 +705,16 @@ export class AsyncWebCrawler {
       timeout,
     } = options;
 
+    if (mode !== undefined) {
+      if (typeof process !== 'undefined' && process.emitWarning) {
+        process.emitWarning('scan(mode) is deprecated — use sources ("primary" | "extended").', 'DeprecationWarning');
+      }
+      sources = mode === 'deep' ? 'extended' : 'primary';
+    }
+
     const body: Record<string, unknown> = {
       url,
-      mode,
+      sources,
       include_subdomains: includeSubdomains,
       extract_head: extractHead,
       soft_404_detection: soft404Detection,
@@ -933,7 +949,15 @@ export class AsyncWebCrawler {
   // Wrapper API -- Simplified endpoints
   // =========================================================================
 
-  async markdown(url: string, options: MarkdownOptions = {}): Promise<MarkdownResponse> {
+  /**
+   * Fetch a page and return clean markdown plus optional extras.
+   * `POST /v1/scrape` (sync, single URL). Use {@link scrapeMany} for batch / async / webhooks.
+   *
+   * @example
+   * const r = await crawler.scrape('https://example.com', { include: ['links', 'metadata'] });
+   * console.log(r.markdown);
+   */
+  async scrape(url: string, options: MarkdownOptions = {}): Promise<MarkdownResponse> {
     const { strategy = 'browser', fit = true, include, crawlerConfig, browserConfig, proxy, bypassCache } = options;
     const body: Record<string, unknown> = { url, strategy, fit };
     if (include) body.include = include;
@@ -941,8 +965,19 @@ export class AsyncWebCrawler {
     if (browserConfig) body.browser_config = browserConfig;
     if (proxy) body.proxy = proxy;
     if (bypassCache) body.bypass_cache = true;
-    const data = await this.http.post('/v1/markdown', body);
+    const data = await this.http.post('/v1/scrape', body);
     return markdownResponseFromDict(data);
+  }
+
+  /**
+   * @deprecated Use {@link scrape}. `/v1/markdown` was renamed to `/v1/scrape`.
+   * Will be removed in 0.8.0.
+   */
+  async markdown(url: string, options: MarkdownOptions = {}): Promise<MarkdownResponse> {
+    if (typeof process !== 'undefined' && process.emitWarning) {
+      process.emitWarning('crawler.markdown() is deprecated — use crawler.scrape().', 'DeprecationWarning');
+    }
+    return this.scrape(url, options);
   }
 
   async screenshot(url: string, options: ScreenshotOptions = {}): Promise<ScreenshotResponse> {
@@ -973,9 +1008,25 @@ export class AsyncWebCrawler {
     return extractResponseFromDict(data);
   }
 
+  /**
+   * Discover all URLs on a domain via DomainMapper.
+   *
+   * @param options.sources `'primary'` (sitemap+homepage+robots+RSS, ~2-15s)
+   *   or `'extended'` (adds Wayback+CC+CRT, ~30-60s). Default `'primary'`.
+   *   Only flip to `'extended'` when primary returns too few URLs.
+   * @param options.mode DEPRECATED — use `sources`. `'default'` → `'primary'`,
+   *   `'deep'` → `'extended'`. Will be removed in 0.8.0.
+   */
   async map(url: string, options: MapOptions = {}): Promise<MapResponse> {
-    const { mode = 'default', maxUrls, includeSubdomains = false, extractHead = true, query, scoreThreshold, force = false, proxy } = options;
-    const body: Record<string, unknown> = { url, mode, include_subdomains: includeSubdomains, extract_head: extractHead };
+    let { sources = 'primary' } = options;
+    const { mode, maxUrls, includeSubdomains = false, extractHead = true, query, scoreThreshold, force = false, proxy } = options;
+    if (mode !== undefined) {
+      if (typeof process !== 'undefined' && process.emitWarning) {
+        process.emitWarning('map(mode) is deprecated — use sources ("primary" | "extended").', 'DeprecationWarning');
+      }
+      sources = mode === 'deep' ? 'extended' : 'primary';
+    }
+    const body: Record<string, unknown> = { url, sources, include_subdomains: includeSubdomains, extract_head: extractHead };
     if (maxUrls !== undefined) body.max_urls = maxUrls;
     if (query) body.query = query;
     if (scoreThreshold !== undefined) body.score_threshold = scoreThreshold;
@@ -987,7 +1038,11 @@ export class AsyncWebCrawler {
 
   // ---- Async batch methods ----
 
-  async markdownMany(urls: string[], options: MarkdownManyOptions = {}): Promise<WrapperJob> {
+  /**
+   * Submit an async scrape job over a list of URLs.
+   * `POST /v1/scrape/async`. Returns a job; pass `wait: true` to poll until terminal.
+   */
+  async scrapeMany(urls: string[], options: MarkdownManyOptions = {}): Promise<WrapperJob> {
     const { strategy = 'browser', fit = true, include, crawlerConfig, browserConfig, proxy, bypassCache, wait = false, pollInterval = 2, timeout, webhookUrl, priority = 5 } = options;
     const body: Record<string, unknown> = { urls, strategy, fit, priority };
     if (include) body.include = include;
@@ -996,10 +1051,20 @@ export class AsyncWebCrawler {
     if (proxy) body.proxy = proxy;
     if (bypassCache) body.bypass_cache = true;
     if (webhookUrl) body.webhook_url = webhookUrl;
-    const data = await this.http.post('/v1/markdown/async', body);
+    const data = await this.http.post('/v1/scrape/async', body);
     let job = wrapperJobFromDict(data);
     if (wait) job = await this.waitWrapperJob(job.jobId, 'markdown', pollInterval, timeout);
     return job;
+  }
+
+  /**
+   * @deprecated Use {@link scrapeMany}. Will be removed in 0.8.0.
+   */
+  async markdownMany(urls: string[], options: MarkdownManyOptions = {}): Promise<WrapperJob> {
+    if (typeof process !== 'undefined' && process.emitWarning) {
+      process.emitWarning('crawler.markdownMany() is deprecated — use crawler.scrapeMany().', 'DeprecationWarning');
+    }
+    return this.scrapeMany(urls, options);
   }
 
   async screenshotMany(urls: string[], options: ScreenshotManyOptions = {}): Promise<WrapperJob> {
@@ -1018,12 +1083,26 @@ export class AsyncWebCrawler {
     return job;
   }
 
-  async extractMany(urls: string[], options: ExtractManyOptions): Promise<WrapperJob> {
-    if (options.method === 'auto' as string) {
-      throw new Error("AUTO method is not supported for batch extraction. Specify 'llm' or 'schema'.");
-    }
-    const { method, query, jsonExample, schema, strategy = 'http', crawlerConfig, browserConfig, llmConfig, proxy, bypassCache, wait = false, pollInterval = 2, timeout, webhookUrl, priority = 5 } = options;
-    const body: Record<string, unknown> = { urls, method, strategy, priority };
+  /**
+   * Submit an async extract job over one base URL plus optional followers.
+   * `POST /v1/extract/async`.
+   *
+   * The base `url` is the schema **template** in css_schema mode — the server
+   * samples it, generates a schema once, then re-applies that schema across
+   * every entry in `extraUrls` for free (no extra LLM calls per URL). In
+   * `method: 'llm'` mode the base has no special role; every URL gets its
+   * own LLM call.
+   *
+   * @param url Base URL (required). Up to 100 URLs total (1 base + 99 extras).
+   * @param options.extraUrls Follower URLs that share the resolved strategy.
+   * @param options.method `'auto'` (default), `'schema'`, or `'llm'`. AUTO works
+   *   for batch as of API v2.2 — the previous "AUTO not allowed for batch"
+   *   restriction was removed.
+   */
+  async extractMany(url: string, options: ExtractManyOptions): Promise<WrapperJob> {
+    const { extraUrls, method = 'auto', query, jsonExample, schema, strategy = 'http', crawlerConfig, browserConfig, llmConfig, proxy, bypassCache, wait = false, pollInterval = 2, timeout, webhookUrl, priority = 5 } = options;
+    const body: Record<string, unknown> = { url, method, strategy, priority };
+    if (extraUrls && extraUrls.length > 0) body.extra_urls = extraUrls;
     if (query) body.query = query;
     if (jsonExample) body.json_example = jsonExample;
     if (schema) body.schema = schema;
@@ -1068,7 +1147,16 @@ export class AsyncWebCrawler {
    * console.log('Extraction:', job.extractionMethodUsed);
    * ```
    */
+  /**
+   * @deprecated Targets the deprecated `/v1/crawl/site` endpoint. Migrate to
+   * `crawler.scan({ criteria })` for URL discovery, then pipe to
+   * `extractMany({ url: first, extraUrls: rest })` for structured fields or
+   * `scrapeMany({ urls })` for markdown. Will be removed in 0.8.0.
+   */
   async crawlSite(url: string, options: SiteCrawlOptions = {}): Promise<SiteCrawlResponse> {
+    if (typeof process !== 'undefined' && process.emitWarning) {
+      process.emitWarning('crawler.crawlSite() targets the deprecated /v1/crawl/site endpoint. Migrate to scan() + extractMany()/scrapeMany().', 'DeprecationWarning');
+    }
     const {
       maxPages = 20,
       discovery = 'map',

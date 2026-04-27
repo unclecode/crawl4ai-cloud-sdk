@@ -1,6 +1,7 @@
 """AsyncWebCrawler - Main crawler class for Crawl4AI Cloud SDK."""
 import asyncio
 import time
+import warnings
 from typing import Optional, Dict, Any, List, Union
 
 from ._client import HTTPClient
@@ -569,6 +570,13 @@ class AsyncWebCrawler:
         if url and source_job:
             raise ValueError("Provide either 'url' or 'source_job', not both")
 
+        warnings.warn(
+            "crawler.deep_crawl() targets the deprecated /v1/crawl/deep endpoint. "
+            "Migrate to crawler.scan(scan={'mode': 'deep'}) for URL discovery, "
+            "then pipe to scrape_many() / extract_many(). Will be removed in 0.8.0.",
+            DeprecationWarning, stacklevel=2,
+        )
+
         # Build request body
         body: Dict[str, Any] = {}
 
@@ -742,7 +750,8 @@ class AsyncWebCrawler:
         url: str,
         criteria: Optional[str] = None,
         scan: Optional[Union[Dict[str, Any], "SiteScanConfig"]] = None,
-        mode: str = "default",
+        sources: str = "primary",
+        mode: Optional[str] = None,
         max_urls: Optional[int] = None,
         include_subdomains: bool = True,
         extract_head: bool = True,
@@ -823,7 +832,16 @@ class AsyncWebCrawler:
         """
         from crawl4ai_cloud.models import ScanResult, SiteScanConfig
 
-        body: Dict[str, Any] = {"url": url, "mode": mode}
+        # Legacy mode= → sources= translation. mode is deprecated.
+        if mode is not None:
+            warnings.warn(
+                "scan(mode=…) is deprecated — use sources= ('primary' | 'extended'). "
+                "Will be removed in 0.8.0.",
+                DeprecationWarning, stacklevel=2,
+            )
+            sources = "extended" if mode == "deep" else "primary"
+
+        body: Dict[str, Any] = {"url": url, "sources": sources}
         if criteria:
             body["criteria"] = criteria
         if scan is not None:
@@ -1080,7 +1098,7 @@ class AsyncWebCrawler:
     # Wrapper API -- Simplified endpoints
     # =========================================================================
 
-    async def markdown(
+    async def scrape(
         self,
         url: str,
         strategy: str = "browser",
@@ -1091,21 +1109,30 @@ class AsyncWebCrawler:
         proxy: Optional[Union[str, Dict[str, Any], ProxyConfig]] = None,
         bypass_cache: bool = False,
     ) -> MarkdownResponse:
-        """
-        Get clean markdown from a URL.
+        """Fetch a page, return clean markdown plus optional extras.
+
+        ``POST /v1/scrape`` (sync, single URL). Use :meth:`scrape_many` for
+        batch / async / webhooks.
 
         Args:
-            url: URL to convert to markdown
-            strategy: "browser" (JS support) or "http" (faster)
-            fit: Apply content pruning for cleaner markdown (default True)
-            include: Extra data to return: "links", "media", "metadata", "tables"
-            crawler_config: CrawlerRunConfig overrides (same fields as /v1/crawl)
-            browser_config: BrowserConfig overrides (headers, cookies, profile_id, etc.)
-            proxy: Proxy configuration
-            bypass_cache: Skip cache
+            url: URL to fetch.
+            strategy: ``"browser"`` (JS-capable, default) or ``"http"`` (3-5× faster, no JS).
+            fit: Apply :class:`PruningContentFilter` for nav-stripped markdown (default True).
+                When ``True``, response also includes ``fit_markdown`` and ``fit_html``.
+            include: Opt back into ``["links", "media", "metadata", "tables"]``.
+                Default trimmer drops these to keep responses lean.
+            crawler_config: ``CrawlerRunConfig`` overrides (same fields as ``/v1/crawl``).
+            browser_config: ``BrowserConfig`` overrides (headers, cookies, ``profile_id``…).
+            proxy: ``ProxyConfig``, dict, or alias string. Omit to disable.
+            bypass_cache: Skip the page cache and force a fresh fetch.
 
         Returns:
-            MarkdownResponse with markdown, fit_markdown, and optional include fields
+            :class:`MarkdownResponse` with ``markdown``, ``fit_markdown`` (when
+            ``fit=True``), and any opted-in extras.
+
+        Example:
+            >>> r = await crawler.scrape("https://example.com", include=["links", "metadata"])
+            >>> r.markdown[:80]
         """
         body: Dict[str, Any] = {"url": url, "strategy": strategy, "fit": fit}
         if include:
@@ -1119,8 +1146,22 @@ class AsyncWebCrawler:
         if bypass_cache:
             body["bypass_cache"] = True
 
-        data = await self._http.request("POST", "/v1/markdown", json=body)
+        data = await self._http.request("POST", "/v1/scrape", json=body)
         return MarkdownResponse.from_dict(data)
+
+    async def markdown(self, *args, **kwargs) -> MarkdownResponse:
+        """DEPRECATED — use :meth:`scrape`. Same shape, same response.
+
+        ``/v1/markdown`` was renamed to ``/v1/scrape``. The SDK method
+        ``markdown()`` is kept as a back-compat alias for one release and
+        will be removed in 0.8.0.
+        """
+        warnings.warn(
+            "crawler.markdown() is deprecated — use crawler.scrape(). "
+            "Will be removed in 0.8.0.",
+            DeprecationWarning, stacklevel=2,
+        )
+        return await self.scrape(*args, **kwargs)
 
     async def screenshot(
         self,
@@ -1223,7 +1264,8 @@ class AsyncWebCrawler:
     async def map(
         self,
         url: str,
-        mode: str = "default",
+        sources: str = "primary",
+        mode: Optional[str] = None,
         max_urls: Optional[int] = None,
         include_subdomains: bool = False,
         extract_head: bool = True,
@@ -1232,24 +1274,36 @@ class AsyncWebCrawler:
         force: bool = False,
         proxy: Optional[Union[str, Dict[str, Any], ProxyConfig]] = None,
     ) -> MapResponse:
-        """
-        Discover all URLs on a domain.
+        """Discover all URLs on a domain via DomainMapper.
 
         Args:
-            url: Domain URL to map (e.g. "https://example.com")
-            mode: "default" (fast, ~2-15s) or "deep" (comprehensive, ~30-60s)
-            max_urls: Maximum URLs to return
-            include_subdomains: Include subdomains in results
-            extract_head: Fetch title/description for each URL
-            query: Score URLs by relevance to this query (BM25)
-            score_threshold: Minimum relevance score (0.0-1.0, requires query)
-            force: Bypass 7-day cache
-            proxy: Proxy configuration
+            url: Domain URL (e.g. ``"https://example.com"``).
+            sources: ``"primary"`` (sitemap+homepage+robots+RSS, ~2-15s) or
+                ``"extended"`` (adds Wayback+Common Crawl+Cert Transparency, ~30-60s).
+                Only flip to extended when primary returns too few URLs.
+            mode: DEPRECATED — use ``sources``. ``"default"`` → ``"primary"``,
+                ``"deep"`` → ``"extended"``.
+            max_urls: Cap on returned URLs.
+            include_subdomains: Discover and include subdomains.
+            extract_head: Fetch ``<head>`` metadata (title, description, og:*)
+                for each URL. Required for BM25 scoring (``query`` + ``score_threshold``).
+            query: BM25 relevance query.
+            score_threshold: 0.0-1.0; requires ``query``.
+            force: Bypass the 7-day archive cache.
+            proxy: ``ProxyConfig``, dict, or alias.
 
         Returns:
-            MapResponse with discovered URLs, scores, and metadata
+            :class:`MapResponse` with ``urls``, ``total_urls``, ``hosts_found``.
         """
-        body: Dict[str, Any] = {"url": url, "mode": mode}
+        if mode is not None:
+            warnings.warn(
+                "map(mode=…) is deprecated — use sources= ('primary' | 'extended'). "
+                "Will be removed in 0.8.0.",
+                DeprecationWarning, stacklevel=2,
+            )
+            sources = "extended" if mode == "deep" else "primary"
+
+        body: Dict[str, Any] = {"url": url, "sources": sources}
         if max_urls is not None:
             body["max_urls"] = max_urls
         body["include_subdomains"] = include_subdomains
@@ -1268,7 +1322,7 @@ class AsyncWebCrawler:
 
     # ---- Async batch methods ----
 
-    async def markdown_many(
+    async def scrape_many(
         self,
         urls: List[str],
         strategy: str = "browser",
@@ -1284,7 +1338,25 @@ class AsyncWebCrawler:
         webhook_url: Optional[str] = None,
         priority: int = 5,
     ) -> WrapperJob:
-        """Create an async markdown job for multiple URLs."""
+        """Submit an async scrape job over a list of URLs.
+
+        ``POST /v1/scrape/async``. Returns a :class:`WrapperJob` immediately;
+        pass ``wait=True`` to poll until terminal. Use :meth:`scrape` for the
+        single-URL sync path.
+
+        Args:
+            urls: Up to 100 URLs.
+            strategy, fit, include, crawler_config, browser_config, proxy, bypass_cache:
+                See :meth:`scrape`.
+            wait: Block until the job is ``completed`` / ``failed`` / ``cancelled``.
+            poll_interval: Seconds between polls when ``wait=True``.
+            timeout: Max seconds to wait when ``wait=True`` (raises :class:`TimeoutError`).
+            webhook_url: POSTed when the job completes.
+            priority: 1-10 (5 default).
+
+        Returns:
+            :class:`WrapperJob` with ``job_id``, ``status``, ``urls_count``.
+        """
         body: Dict[str, Any] = {"urls": urls, "strategy": strategy, "fit": fit}
         if include:
             body["include"] = include
@@ -1300,11 +1372,20 @@ class AsyncWebCrawler:
             body["webhook_url"] = webhook_url
         body["priority"] = priority
 
-        data = await self._http.request("POST", "/v1/markdown/async", json=body)
+        data = await self._http.request("POST", "/v1/scrape/async", json=body)
         job = WrapperJob.from_dict(data)
         if wait:
             job = await self._wait_wrapper_job(job.job_id, "markdown", poll_interval, timeout)
         return job
+
+    async def markdown_many(self, *args, **kwargs) -> WrapperJob:
+        """DEPRECATED — use :meth:`scrape_many`. Same shape, same response."""
+        warnings.warn(
+            "crawler.markdown_many() is deprecated — use crawler.scrape_many(). "
+            "Will be removed in 0.8.0.",
+            DeprecationWarning, stacklevel=2,
+        )
+        return await self.scrape_many(*args, **kwargs)
 
     async def screenshot_many(
         self,
@@ -1348,8 +1429,9 @@ class AsyncWebCrawler:
 
     async def extract_many(
         self,
-        urls: List[str],
-        method: str = "llm",
+        url: str,
+        extra_urls: Optional[List[str]] = None,
+        method: str = "auto",
         query: Optional[str] = None,
         json_example: Optional[Dict[str, Any]] = None,
         schema: Optional[Dict[str, Any]] = None,
@@ -1365,15 +1447,34 @@ class AsyncWebCrawler:
         webhook_url: Optional[str] = None,
         priority: int = 5,
     ) -> WrapperJob:
-        """
-        Create an async extract job for multiple URLs.
+        """Submit an async extract job over one base URL plus optional followers.
 
-        Note: AUTO method is not supported for batch. Specify "llm" or "schema".
-        """
-        if method == "auto":
-            raise ValueError("AUTO method is not supported for batch extraction. Specify 'llm' or 'schema'.")
+        ``POST /v1/extract/async``. The base ``url`` is the schema **template**
+        in css_schema mode — the server samples it, generates a schema once,
+        then re-applies that schema across every entry in ``extra_urls`` for
+        free (no extra LLM calls per URL). In ``method="llm"`` mode the base
+        has no special role; every URL gets its own LLM call.
 
-        body: Dict[str, Any] = {"urls": urls, "method": method, "strategy": strategy}
+        Args:
+            url: Base URL (required). Up to 100 URLs total (1 base + 99 extras).
+            extra_urls: Follower URLs that share the resolved strategy.
+            method: ``"auto"`` (default), ``"schema"``, or ``"llm"``. AUTO works
+                for batch as of API v2.2 — the previous "AUTO not allowed for
+                batch" restriction was removed.
+            query, json_example, schema: shape hints — see :meth:`extract`.
+            strategy, crawler_config, browser_config, llm_config, proxy, bypass_cache:
+                Standard request fields.
+            wait: Block until terminal status.
+            poll_interval, timeout, webhook_url, priority: Async controls.
+
+        Returns:
+            :class:`WrapperJob`. Poll the job's ``results[]`` for inline per-URL
+            extraction records (sync-shaped: ``{url, success, data, method_used,
+            schema_used, query_used, duration_ms, error_message}``).
+        """
+        body: Dict[str, Any] = {"url": url, "method": method, "strategy": strategy}
+        if extra_urls:
+            body["extra_urls"] = extra_urls
         if query:
             body["query"] = query
         if json_example:
@@ -1497,6 +1598,15 @@ class AsyncWebCrawler:
             ```
         """
         from crawl4ai_cloud.models import SiteScanConfig, SiteExtractConfig
+
+        warnings.warn(
+            "crawler.crawl_site() targets the deprecated /v1/crawl/site endpoint. "
+            "Migrate to crawler.scan(criteria=...) for URL discovery, then pipe to "
+            "crawler.extract_many(url=first, extra_urls=rest, ...) for structured "
+            "fields or crawler.scrape_many(urls=...) for markdown. "
+            "Will be removed in 0.8.0.",
+            DeprecationWarning, stacklevel=2,
+        )
 
         body: Dict[str, Any] = {
             "url": url,

@@ -322,6 +322,9 @@ export function isScanJobComplete(job: ScanJobStatus): boolean {
  * Options for the scan() method.
  */
 export interface ScanOptions {
+  /** DomainMapper source depth. Default `'primary'`. */
+  sources?: 'primary' | 'extended';
+  /** @deprecated Use `sources`. `'default'` → `'primary'`, `'deep'` → `'extended'`. */
   mode?: 'default' | 'deep';
   maxUrls?: number;
   includeSubdomains?: boolean;
@@ -949,7 +952,10 @@ export interface ExtractOptions {
 }
 
 export interface ExtractManyOptions extends Omit<ExtractOptions, 'method'> {
-  method: 'llm' | 'schema';
+  /** Optional follower URLs that share the resolved strategy (≤99, total ≤100 with base url). */
+  extraUrls?: string[];
+  /** `'auto'` (default), `'schema'`, or `'llm'`. AUTO works for batch as of API v2.2. */
+  method?: 'auto' | 'llm' | 'schema';
   wait?: boolean;
   pollInterval?: number;
   timeout?: number;
@@ -958,6 +964,9 @@ export interface ExtractManyOptions extends Omit<ExtractOptions, 'method'> {
 }
 
 export interface MapOptions {
+  /** DomainMapper source depth. Default `'primary'`. */
+  sources?: 'primary' | 'extended';
+  /** @deprecated Use `sources`. `'default'` → `'primary'`, `'deep'` → `'extended'`. */
   mode?: 'default' | 'deep';
   maxUrls?: number;
   includeSubdomains?: boolean;

@@ -1,8 +1,16 @@
 # Crawl4AI Cloud SDK for Node.js
 
-One-line web scraping, screenshots, and structured extraction -- powered by [Crawl4AI Cloud](https://api.crawl4ai.com).
+One-line web scraping, screenshots, and structured extraction — powered by [Crawl4AI Cloud](https://api.crawl4ai.com).
 
-[![npm version](https://badge.fury.io/js/crawl4ai-cloud.svg)](https://badge.fury.io/js/crawl4ai-cloud) v0.3.0
+[![npm version](https://badge.fury.io/js/crawl4ai-cloud.svg)](https://badge.fury.io/js/crawl4ai-cloud) v0.7.0
+
+## What's new in 0.7.0
+
+- **`scrape()` + `scrapeMany()`** are the canonical methods (replacing `markdown` / `markdownMany`). Same shape, same response — they hit the new `/v1/scrape(/async)` endpoints.
+- `markdown()` / `markdownMany()` are kept as **deprecated aliases** that route to `/v1/scrape`. Removed in 0.8.0.
+- **`extractMany()`** signature fixed: now takes `extractMany(url, { extraUrls: […], … })` (was `extractMany(urls[], …)`, which the server rejected). `method: 'auto'` is now allowed for batch.
+- **`sources`** field added to `scan()` and `map()` (`'primary'` | `'extended'`). Replaces `mode`, which is kept as a deprecated alias.
+- **`crawlSite()` and `deepCrawl()`** target deprecated endpoints. They still work and emit a `DeprecationWarning`. **Migrate to the composable scan + scrape/extract chain** — see below.
 
 ## Install
 
@@ -16,78 +24,78 @@ npm install crawl4ai-cloud
 import { AsyncWebCrawler } from 'crawl4ai-cloud';
 
 const c = new AsyncWebCrawler({ apiKey: 'sk_live_...' });
-```
 
-### Get Markdown
+// Scrape a page → clean markdown (+ optional links/media/metadata/tables)
+const page = await c.scrape('https://example.com');
+console.log(page.markdown);
 
-```typescript
-const { markdown } = await c.markdown('https://example.com');
-console.log(markdown);
-```
+// Take a full-page screenshot
+const shot = await c.screenshot('https://example.com');
+// shot.screenshot is base64 PNG
 
-### Take a Screenshot
-
-```typescript
-const { screenshot } = await c.screenshot('https://example.com');
-// screenshot is a base64-encoded PNG
-```
-
-### Extract Structured Data
-
-```typescript
-const { data } = await c.extract('https://news.ycombinator.com', {
-  query: 'Extract all story titles and their URLs',
+// Extract structured data — AUTO picks css_schema vs llm
+const job = await c.extractMany('https://news.ycombinator.com', {
+  method: 'auto',
+  query: 'get each story title, URL, and points',
+  wait: true,
 });
-console.log(data); // [{ title: '...', url: '...' }, ...]
+for (const r of job.results ?? []) console.log(r.data);
+
+// Discover all URLs on a domain
+const sitemap = await c.map('https://docs.python.org', { sources: 'primary' });
+sitemap.urls.slice(0, 10).forEach(u => console.log(u.url));
 ```
 
-### Map a Site (simple, sync)
+## Crawl a whole site — composable two-step
+
+There's no single bundled "crawl this site" method anymore. Compose it:
 
 ```typescript
-const { urls, totalUrls } = await c.map('https://docs.example.com');
-console.log(`Found ${totalUrls} pages`);
-```
-
-### Scan a Site (AI-assisted)
-
-Plain-English criteria → LLM picks scan strategy, URL patterns, filters.
-
-```typescript
-const result = await c.scan('https://docs.crawl4ai.com', {
-  criteria: 'API reference and core documentation pages',
-  maxUrls: 50,
+// Step 1 — discover URLs
+const scan = await c.scan('https://books.toscrape.com', {
+  criteria: 'all book detail pages',
+  maxUrls: 20,
 });
-console.log(`Mode: ${result.modeUsed}`);  // "map" or "deep"
-console.log(`Found: ${result.totalUrls} URLs`);
-console.log(`AI reasoning: ${result.generatedConfig?.reasoning}`);
-```
+const urls = scan.urls.map(u => u.url);
 
-### Crawl an Entire Site with Auto-Extraction (flagship)
+// Step 2A — pipe to scrapeMany for markdown
+const mdJob = await c.scrapeMany(urls, { strategy: 'http', wait: true });
 
-```typescript
-const job = await c.crawlSite('https://books.toscrape.com', {
-  criteria: 'all book listing pages',
-  maxPages: 50,
-  strategy: 'http',
-  extract: {
-    query: 'book title, price, rating',
-    jsonExample: { title: '...', price: '£0.00', rating: 0 },
-    method: 'auto',  // picks CSS schema vs LLM
-  },
+// Step 2B — OR pipe to extractMany for structured fields. The base url is
+// the schema TEMPLATE — schema is generated once, then re-applied across
+// extraUrls for free in css_schema mode (10-100× cheaper than per-page LLM).
+const [base, ...rest] = urls;
+const exJob = await c.extractMany(base, {
+  extraUrls: rest,
+  method: 'auto',
+  query: 'book title, price, rating',
+  wait: true,
 });
-console.log(`Job ${job.jobId} started`);
-console.log(`Extraction: ${job.extractionMethodUsed}`);
-console.log(`Schema generated: ${!!job.schemaUsed}`);
-
-// Unified polling — one endpoint for scan + crawl phases
-while (true) {
-  const status = await c.getSiteCrawlJob(job.jobId);
-  console.log(`${status.phase}: ${status.progress.urlsCrawled}/${status.progress.total}`);
-  if (['done', 'completed', 'partial', 'failed'].includes(status.phase) ||
-      ['completed', 'partial', 'failed', 'cancelled'].includes(status.status)) break;
-  await new Promise(r => setTimeout(r, 3000));
-}
+for (const r of exJob.results ?? []) console.log(r.data);
 ```
+
+## Wrapper API Reference
+
+| Method | What it does | Endpoint |
+|---|---|---|
+| `scrape(url)` | Page → clean markdown + optional `include: ['links'\|'media'\|'metadata'\|'tables']` | `POST /v1/scrape` |
+| `scrapeMany(urls)` | Async batch scrape (≤100 URLs) | `POST /v1/scrape/async` |
+| `screenshot(url)` | Base64 PNG (and optional PDF) | `POST /v1/screenshot` |
+| `screenshotMany(urls)` | Async batch screenshot | `POST /v1/screenshot/async` |
+| `extract(url, { query })` | Sync extract — single URL | `POST /v1/extract` |
+| `extractMany(url, { extraUrls })` | Async extract — base + followers, schema reused for free in css_schema mode | `POST /v1/extract/async` |
+| `scan(url, { sources, criteria })` | URL discovery — sources=primary/extended, optional AI criteria | `POST /v1/scan` |
+| `map(url, { sources })` | Simpler URL discovery (no criteria) | `POST /v1/map` |
+| `enrich({ query })` | Multi-entity table from a brief, list of entities, or list of URLs | `POST /v1/enrich/async` |
+
+### Deprecated (still work, emit warnings)
+
+| Method | Migration |
+|---|---|
+| `markdown(url)` / `markdownMany(urls)` | Use `scrape` / `scrapeMany`. |
+| `crawlSite(url, { criteria, extract })` | Use `scan` + `extractMany`. See "Crawl a whole site" above. |
+| `deepCrawl(url, …)` | Use `scan(url, { scan: { mode: 'deep' } })` + the chain above. |
+| `scan(url, { mode })` / `map(url, { mode })` | Use `sources: 'primary'` or `sources: 'extended'`. |
 
 ### Enrich v2 (build a data table)
 

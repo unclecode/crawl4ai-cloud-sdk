@@ -1,9 +1,17 @@
 # Crawl4AI Cloud SDK
 
-The fastest way to turn any URL into markdown, screenshots, structured data, or a full site crawl.
+The fastest way to turn any URL into markdown, screenshots, structured data, or a multi-entity table.
 
 [![PyPI version](https://badge.fury.io/py/crawl4ai-cloud-sdk.svg)](https://badge.fury.io/py/crawl4ai-cloud-sdk)
 [![Python Version](https://img.shields.io/pypi/pyversions/crawl4ai-cloud-sdk)](https://pypi.org/project/crawl4ai-cloud-sdk/)
+
+## What's new in 0.7.0
+
+- **`scrape()` + `scrape_many()`** are the canonical methods (replacing `markdown` / `markdown_many`). Same shape, same response — they hit the new `/v1/scrape(/async)` endpoints.
+- `markdown()` / `markdown_many()` are kept as **deprecated aliases** that route to `/v1/scrape` and emit a `DeprecationWarning`. Removed in 0.8.0.
+- **`extract_many()`** signature fixed: now takes `url + extra_urls=` (was `urls=[]`, which the server rejected). `method="auto"` is now allowed for batch.
+- **`sources=`** kwarg added to `scan()` and `map()` (`"primary"` | `"extended"`). Replaces `mode=`, which is kept as a deprecated alias.
+- **`crawl_site()` and `deep_crawl()`** target deprecated endpoints (`/v1/crawl/site`, `/v1/crawl/deep`). They still work and emit a `DeprecationWarning`. **Migrate to the composable scan + scrape/extract chain** — see below.
 
 ## Install
 
@@ -22,48 +30,92 @@ from crawl4ai_cloud import AsyncWebCrawler
 async def main():
     async with AsyncWebCrawler(api_key="sk_live_...") as crawler:
 
-        # Get clean markdown from any page
-        md = await crawler.markdown("https://example.com")
-        print(md.markdown)
+        # Scrape a page → clean markdown (+ optional links/media/metadata/tables)
+        page = await crawler.scrape("https://example.com")
+        print(page.markdown)
 
         # Take a full-page screenshot
-        ss = await crawler.screenshot("https://example.com")
-        # ss.screenshot is base64-encoded PNG
+        shot = await crawler.screenshot("https://example.com")
+        # shot.screenshot is base64-encoded PNG
 
-        # Extract structured data with natural language
-        data = await crawler.extract(
-            "https://news.ycombinator.com",
+        # Extract structured data — AUTO picks css_schema vs llm
+        job = await crawler.extract_many(
+            url="https://news.ycombinator.com",
+            method="auto",
             query="get each story title, URL, and points",
+            wait=True,
         )
-        print(data.data)  # list of dicts
+        for r in job.results:
+            print(r.data)
 
         # Discover all URLs on a domain
-        sitemap = await crawler.map("https://docs.python.org")
+        sitemap = await crawler.map("https://docs.python.org", sources="primary")
         for u in sitemap.urls[:10]:
             print(u.url)
 
-        # Crawl an entire site (async, returns job_id)
-        job = await crawler.crawl_site(
-            "https://docs.example.com",
-            max_pages=50,
-            wait=True,
-        )
-        print(f"Done: {job.discovered_urls} pages crawled")
-
 asyncio.run(main())
+```
+
+## Crawl a whole site — composable two-step
+
+There's no single bundled "crawl this site" method anymore. Compose it:
+
+```python
+async with AsyncWebCrawler(api_key="sk_live_...") as crawler:
+
+    # Step 1 — discover URLs (criteria + scan.patterns narrow the result)
+    scan = await crawler.scan(
+        "https://books.toscrape.com",
+        criteria="all book detail pages",
+        max_urls=20,
+    )
+    urls = [u.url for u in scan.urls]
+
+    # Step 2A — pipe to scrape_many for markdown
+    md_job = await crawler.scrape_many(urls, strategy="http", wait=True)
+
+    # Step 2B — OR pipe to extract_many for structured fields. The base url is
+    # the schema TEMPLATE — schema is generated once, then re-applied across
+    # extra_urls for free in css_schema mode (10-100× cheaper than per-page LLM).
+    base, *rest = urls
+    ex_job = await crawler.extract_many(
+        url=base,
+        extra_urls=rest,
+        method="auto",
+        query="book title, price, rating",
+        wait=True,
+    )
+    for r in ex_job.results:
+        print(r.data)
 ```
 
 ## Wrapper API Reference
 
 | Method | What it does | Endpoint |
 |--------|-------------|----------|
-| `markdown(url)` | Returns clean markdown (with optional fit/pruning) | `POST /v1/markdown` |
-| `screenshot(url)` | Returns base64 screenshot (PNG) and optional PDF | `POST /v1/screenshot` |
-| `extract(url, query=...)` | Extracts structured data (auto/LLM/CSS schema) | `POST /v1/extract` |
-| `map(url)` | Simple URL discovery on a domain (always sync) | `POST /v1/map` |
-| `scan(url, criteria=...)` | **AI-assisted** URL discovery with plain-English criteria + map/deep routing | `POST /v1/scan` |
-| `crawl_site(url, criteria=..., extract=...)` | **AI-assisted** full site crawl -- LLM generates scan config + extraction schema | `POST /v1/crawl/site` |
-| `enrich(query=…)` | Build a data table from a brief, list of entities, or list of URLs (multi-phase) | `POST /v1/enrich/async` |
+| `scrape(url)` | Fetch a page → clean markdown + optional `include=[links\|media\|metadata\|tables]` | `POST /v1/scrape` |
+| `scrape_many(urls=[...])` | Async batch scrape (≤100 URLs) | `POST /v1/scrape/async` |
+| `screenshot(url)` | Base64 PNG (and optional PDF) | `POST /v1/screenshot` |
+| `screenshot_many(urls=[...])` | Async batch screenshot | `POST /v1/screenshot/async` |
+| `extract(url, query=...)` | Sync extract — single URL | `POST /v1/extract` |
+| `extract_many(url, extra_urls=[...])` | Async extract — base URL + followers, schema reused for free in css_schema mode | `POST /v1/extract/async` |
+| `scan(url, sources=, criteria=, scan=)` | URL discovery — sources=primary/extended, optional AI criteria | `POST /v1/scan` |
+| `map(url, sources=)` | Simpler URL discovery wrapper (no criteria) | `POST /v1/map` |
+| `enrich(query=…)` | Multi-entity table from a brief, list of entities, or list of URLs (multi-phase) | `POST /v1/enrich/async` |
+| `configure(...)` | _(internal preview, surfaced later)_ — natural-language → ready-to-POST body | `POST /v1/configure` |
+
+Each method returns a typed response (`MarkdownResponse`, `ScreenshotResponse`, `ExtractResponse`, `MapResponse`, `ScanResult`, `WrapperJob`, `EnrichJobStatus`).
+
+### Deprecated (still work, emit warnings)
+
+| Method | Migration |
+|---|---|
+| `markdown(url)` | Use `scrape(url)`. |
+| `markdown_many(urls)` | Use `scrape_many(urls)`. |
+| `crawl_site(url, criteria=…, extract=…)` | Use `scan(url, criteria=…)` + `extract_many(url, extra_urls=…)`. See "Crawl a whole site" above. |
+| `deep_crawl(url, …)` | Use `scan(url, scan={"mode": "deep"})` + the chain above. |
+| `scan(url, mode=…)` | Use `sources="primary"` or `sources="extended"`. |
+| `map(url, mode=…)` | Same — `sources=`. |
 
 Each method returns a typed response object (`MarkdownResponse`, `ScreenshotResponse`, `ExtractResponse`, `MapResponse`, `ScanResult`, `SiteCrawlResponse`, `EnrichJobStatus`) with relevant status and data fields.
 

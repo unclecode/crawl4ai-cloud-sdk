@@ -1,16 +1,24 @@
 # Crawl4AI Cloud SDK for Go
 
-The official Go SDK for [Crawl4AI Cloud](https://api.crawl4ai.com). One method per task, idiomatic error handling, zero dependencies beyond the standard library.
+The official Go SDK for [Crawl4AI Cloud](https://api.crawl4ai.com). One method per task, idiomatic option types, zero dependencies beyond the standard library.
 
-> **v0.3.0** -- This SDK is for **Crawl4AI Cloud** (api.crawl4ai.com), the managed cloud service.
+> **v0.7.0** — for **Crawl4AI Cloud** (api.crawl4ai.com), the managed cloud service.
 > For the self-hosted open-source version, see [github.com/unclecode/crawl4ai](https://github.com/unclecode/crawl4ai).
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/unclecode/crawl4ai-cloud-sdk/go.svg)](https://pkg.go.dev/github.com/unclecode/crawl4ai-cloud-sdk/go)
 
+## What's new in 0.7.0
+
+- **`Scrape()`** is the canonical sync method — same shape as `Markdown()` (now a deprecated alias). Both hit `/v1/scrape`.
+- **`ScrapeAsync()`, `ScreenshotAsync()`, `ExtractAsync()`** — new async batch wrappers (these didn't exist before; you had to drop down to `Arun`/`ArunMany`).
+- **`ExtractAsync(url, &ExtractAsyncOptions{ExtraURLs: …})`** is the new shape: base URL + followers, schema generated once and applied across all URLs for free in css_schema mode. `Method: "auto"` is now allowed for batch.
+- **`Sources` field** added to `MapOptions` and `ScanOptions` (`"primary"` | `"extended"`). Replaces `Mode`, which is kept as a deprecated alias.
+- **`CrawlSite()` and `DeepCrawl()`** target deprecated endpoints — they still work but `go vet` flags them as deprecated. **Migrate to the composable scan + scrape/extract chain** — see below.
+
 ## Install
 
 ```bash
-go get github.com/unclecode/crawl4ai-cloud-sdk/go@v0.3.0
+go get github.com/unclecode/crawl4ai-cloud-sdk/go@v0.7.0
 ```
 
 Set your API key (sign up at [api.crawl4ai.com](https://api.crawl4ai.com)):
@@ -21,118 +29,111 @@ export CRAWL4AI_API_KEY=sk_live_...
 
 ## Quick Examples
 
-### Get Markdown
+### Scrape a Page
 
 ```go
-c, err := crawl4ai.NewAsyncWebCrawler(crawl4ai.CrawlerOptions{})
+c, _ := crawl4ai.NewAsyncWebCrawler(crawl4ai.CrawlerOptions{})
+
+page, err := c.Scrape("https://example.com", nil)
 if err != nil {
     log.Fatal(err)
 }
-
-md, err := c.Markdown("https://example.com", nil)
-if err != nil {
-    log.Fatal(err)
-}
-
-fmt.Println(md.Markdown)
+fmt.Println(page.Markdown)
 ```
 
 ### Take a Screenshot
 
 ```go
-ss, err := c.Screenshot("https://example.com", nil)
-if err != nil {
-    log.Fatal(err)
-}
-
-fmt.Printf("Base64 length: %d\n", len(ss.Screenshot))
+shot, _ := c.Screenshot("https://example.com", nil)
+fmt.Printf("Base64 PNG length: %d\n", len(shot.Screenshot))
 ```
 
-### Extract Structured Data
+### Extract Structured Data — base URL + followers
 
 ```go
-data, err := c.Extract("https://books.toscrape.com", &crawl4ai.ExtractOptions{
-    Query: "extract all books with title and price",
+job, _ := c.ExtractAsync("https://books.toscrape.com", &crawl4ai.ExtractAsyncOptions{
+    ExtractOptions: crawl4ai.ExtractOptions{
+        Query:  "book title, price, rating",
+        Method: "auto",     // picks CSS schema vs LLM from sample HTML
+    },
+    Wait:    true,
+    Timeout: 3 * time.Minute,
 })
-if err != nil {
-    log.Fatal(err)
-}
-
-for _, item := range data.Data {
-    fmt.Printf("%s - %s\n", item["title"], item["price"])
+for _, r := range job.Results {
+    fmt.Printf("%v\n", r.Data)
 }
 ```
 
-### Discover All URLs on a Domain (simple, sync)
+### Discover URLs on a Domain
 
 ```go
-result, err := c.Map("https://crawl4ai.com", &crawl4ai.MapOptions{
-    MaxURLs: 50,
+maxUrls := 50
+result, _ := c.Map("https://crawl4ai.com", &crawl4ai.MapOptions{
+    Sources: "primary",   // "primary" (fast) or "extended" (Wayback+CC, slower)
+    MaxURLs: &maxUrls,
 })
-if err != nil {
-    log.Fatal(err)
-}
-
 fmt.Printf("Found %d URLs on %s\n", result.TotalUrls, result.Domain)
-for _, u := range result.URLs {
-    fmt.Println(u.URL)
-}
 ```
 
 ### Scan URLs (AI-assisted)
 
-Pass a plain-English `Criteria` and let the backend LLM pick scan mode, URL patterns, filters.
+Pass plain-English `Criteria` and the backend LLM picks scan strategy, URL patterns, filters.
 
 ```go
-result, err := c.Scan("https://docs.crawl4ai.com", &crawl4ai.ScanOptions{
+result, _ := c.Scan("https://docs.crawl4ai.com", &crawl4ai.ScanOptions{
+    Sources:  "primary",
     Criteria: "API reference and core documentation pages",
     MaxUrls:  50,
 })
-if err != nil {
-    log.Fatal(err)
-}
-
-fmt.Printf("Mode used: %s\n", result.ModeUsed)           // "map" or "deep"
-fmt.Printf("Found: %d URLs\n", result.TotalUrls)
-if result.GeneratedConfig != nil {
-    fmt.Printf("AI reasoning: %s\n", result.GeneratedConfig.Reasoning)
-}
+fmt.Printf("Mode used: %s, found %d URLs\n", result.ModeUsed, result.TotalUrls)
 ```
 
-### Crawl an Entire Site with Auto-Extraction (flagship)
+## Crawl a whole site — composable two-step
+
+There's no single bundled "crawl this site" method anymore. Compose it:
 
 ```go
-site, err := c.CrawlSite("https://books.toscrape.com", &crawl4ai.SiteCrawlOptions{
-    Criteria: "all book listing pages",
-    MaxPages: 50,
-    Strategy: "http",
-    Extract: &crawl4ai.SiteExtractConfig{
-        Query:       "book title, price, rating",
-        JSONExample: map[string]interface{}{"title": "...", "price": "£0.00", "rating": 0},
-        Method:      "auto", // picks CSS schema vs LLM
-    },
+// Step 1 — discover URLs
+scan, _ := c.Scan("https://books.toscrape.com", &crawl4ai.ScanOptions{
+    Sources:  "primary",
+    Criteria: "all book detail pages",
+    MaxUrls:  20,
 })
-if err != nil {
-    log.Fatal(err)
+urls := make([]string, 0, len(scan.Urls))
+for _, u := range scan.Urls {
+    urls = append(urls, u.URL)
 }
 
-fmt.Printf("Job %s started\n", site.JobID)
-fmt.Printf("Extraction: %s\n", site.ExtractionMethodUsed) // "css_schema" or "llm"
-fmt.Printf("Schema generated: %v\n", site.SchemaUsed != nil)
+// Step 2A — pipe to ScrapeAsync for markdown
+mdJob, _ := c.ScrapeAsync(urls, &crawl4ai.ScrapeAsyncOptions{
+    MarkdownOptions: crawl4ai.MarkdownOptions{Strategy: "http"},
+    Wait:            true,
+    Timeout:         2 * time.Minute,
+})
 
-// Unified polling: one endpoint for scan + crawl phases
-for {
-    status, _ := c.GetSiteCrawlJob(site.JobID)
-    fmt.Printf("%s: %d/%d\n", status.Phase, status.Progress.UrlsCrawled, status.Progress.Total)
-    if status.IsComplete() {
-        if status.DownloadURL != "" {
-            fmt.Printf("Download: %s\n", status.DownloadURL)
-        }
-        break
-    }
-    time.Sleep(3 * time.Second)
-}
+// Step 2B — OR pipe to ExtractAsync for structured fields. The base url is
+// the schema TEMPLATE — schema is generated once, then re-applied across
+// ExtraURLs for free in css_schema mode (10-100× cheaper than per-page LLM).
+base, rest := urls[0], urls[1:]
+exJob, _ := c.ExtractAsync(base, &crawl4ai.ExtractAsyncOptions{
+    ExtractOptions: crawl4ai.ExtractOptions{
+        Query:  "book title, price, rating",
+        Method: "auto",
+    },
+    ExtraURLs: rest,
+    Wait:      true,
+    Timeout:   3 * time.Minute,
+})
 ```
+
+## Deprecated (still work, `go vet` flags them)
+
+| Method | Migration |
+|---|---|
+| `Markdown(url)` | Use `Scrape(url)`. |
+| `CrawlSite(url, …)` | Use `Scan(url, &ScanOptions{Criteria: …})` + `ExtractAsync(url, &ExtractAsyncOptions{ExtraURLs: …})` or `ScrapeAsync(urls, …)`. |
+| `DeepCrawl(url, …)` | Use `Scan(url, &ScanOptions{Scan: &SiteScanConfig{Mode: "deep"}})` + the chain above. |
+| `MapOptions.Mode` / `ScanOptions.Mode` | Use `Sources: "primary"` or `Sources: "extended"`. |
 
 ### Enrich v2 (build a data table)
 

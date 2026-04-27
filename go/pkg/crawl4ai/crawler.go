@@ -289,6 +289,10 @@ type DeepCrawlResultWrapper struct {
 }
 
 // DeepCrawl performs a deep crawl starting from a URL.
+//
+// Deprecated: targets the deprecated /v1/crawl/deep endpoint. Migrate to
+// Scan() with ScanOptions{Scan: &SiteScanConfig{Mode: "deep"}} for URL discovery,
+// then pipe the results to ScrapeAsync()/ExtractAsync(). Will be removed in 0.8.0.
 func (c *AsyncWebCrawler) DeepCrawl(url string, opts *DeepCrawlOptions) (*DeepCrawlResultWrapper, error) {
 	if opts == nil {
 		opts = &DeepCrawlOptions{}
@@ -527,9 +531,20 @@ func (c *AsyncWebCrawler) Scan(url string, opts *ScanOptions) (*ScanResult, erro
 		"url": url,
 	}
 	if opts != nil {
-		if opts.Mode != "" {
-			body["mode"] = opts.Mode
+		// Sources (canonical) — falls back to legacy Mode for back-compat.
+		sources := opts.Sources
+		if sources == "" && opts.Mode != "" {
+			if opts.Mode == "deep" {
+				sources = "extended"
+			} else {
+				sources = "primary"
+			}
 		}
+		if sources == "" {
+			sources = "primary"
+		}
+		body["sources"] = sources
+
 		if opts.MaxUrls > 0 {
 			body["max_urls"] = opts.MaxUrls
 		}
@@ -633,6 +648,161 @@ func (c *AsyncWebCrawler) waitScanJobV2(jobID string, pollInterval, timeout time
 		}
 		time.Sleep(pollInterval)
 	}
+}
+
+// waitWrapperJob polls /v1/{type}/jobs/{id} until the async wrapper job finishes.
+// jobType is one of "markdown" / "screenshot" / "extract".
+func (c *AsyncWebCrawler) waitWrapperJob(jobID, jobType string, pollInterval, timeout time.Duration) (*WrapperJob, error) {
+	if pollInterval == 0 {
+		pollInterval = 2 * time.Second
+	}
+	// /v1/markdown/jobs path stays for back-compat, but new code should hit /v1/scrape/jobs.
+	pathPrefix := "/v1/" + jobType
+	if jobType == "markdown" {
+		pathPrefix = "/v1/scrape"
+	}
+	start := time.Now()
+	for {
+		data, err := c.http.Get(pathPrefix+"/jobs/"+jobID, nil)
+		if err != nil {
+			return nil, err
+		}
+		job, err := unmarshalWrapper[WrapperJob](data)
+		if err != nil {
+			return nil, err
+		}
+		if job.IsComplete() {
+			return job, nil
+		}
+		if timeout > 0 && time.Since(start) > timeout {
+			return nil, NewTimeoutError(fmt.Sprintf(
+				"timeout waiting for %s job %s (status: %s)",
+				jobType, jobID, job.Status,
+			))
+		}
+		time.Sleep(pollInterval)
+	}
+}
+
+// ScreenshotAsync submits an async screenshot job over a list of URLs.
+// POST /v1/screenshot/async.
+func (c *AsyncWebCrawler) ScreenshotAsync(urls []string, opts *ScreenshotAsyncOptions) (*WrapperJob, error) {
+	if opts == nil {
+		opts = &ScreenshotAsyncOptions{}
+	}
+	fullPage := true
+	if opts.FullPage != nil {
+		fullPage = *opts.FullPage
+	}
+	priority := opts.Priority
+	if priority == 0 {
+		priority = 5
+	}
+
+	body := map[string]interface{}{"urls": urls, "full_page": fullPage, "priority": priority}
+	if opts.PDF {
+		body["pdf"] = true
+	}
+	if opts.WaitFor != "" {
+		body["wait_for"] = opts.WaitFor
+	}
+	if opts.CrawlerConfig != nil {
+		body["crawler_config"] = opts.CrawlerConfig
+	}
+	if opts.BrowserConfig != nil {
+		body["browser_config"] = opts.BrowserConfig
+	}
+	if opts.Proxy != nil {
+		body["proxy"] = opts.Proxy
+	}
+	if opts.BypassCache {
+		body["bypass_cache"] = true
+	}
+	if opts.WebhookURL != "" {
+		body["webhook_url"] = opts.WebhookURL
+	}
+
+	data, err := c.http.Post("/v1/screenshot/async", body, 0)
+	if err != nil {
+		return nil, err
+	}
+	job, err := unmarshalWrapper[WrapperJob](data)
+	if err != nil {
+		return nil, err
+	}
+	if opts.Wait {
+		return c.waitWrapperJob(job.JobID, "screenshot", opts.PollInterval, opts.Timeout)
+	}
+	return job, nil
+}
+
+// ExtractAsync submits an async extract job over one base URL plus optional followers.
+// POST /v1/extract/async.
+//
+// The base url is the schema TEMPLATE in css_schema mode — sampled once, schema generated,
+// then re-applied across opts.ExtraURLs for free. In method="llm" mode the base has no
+// special role; every URL gets its own LLM call. Up to 100 URLs total (1 base + 99 extras).
+func (c *AsyncWebCrawler) ExtractAsync(url string, opts *ExtractAsyncOptions) (*WrapperJob, error) {
+	if opts == nil {
+		opts = &ExtractAsyncOptions{}
+	}
+	method := opts.Method
+	if method == "" {
+		method = "auto"
+	}
+	strategy := opts.Strategy
+	if strategy == "" {
+		strategy = "http"
+	}
+	priority := opts.Priority
+	if priority == 0 {
+		priority = 5
+	}
+
+	body := map[string]interface{}{"url": url, "method": method, "strategy": strategy, "priority": priority}
+	if len(opts.ExtraURLs) > 0 {
+		body["extra_urls"] = opts.ExtraURLs
+	}
+	if opts.Query != "" {
+		body["query"] = opts.Query
+	}
+	if opts.JSONExample != nil {
+		body["json_example"] = opts.JSONExample
+	}
+	if opts.Schema != nil {
+		body["schema"] = opts.Schema
+	}
+	if opts.CrawlerConfig != nil {
+		body["crawler_config"] = opts.CrawlerConfig
+	}
+	if opts.BrowserConfig != nil {
+		body["browser_config"] = opts.BrowserConfig
+	}
+	if opts.LLMConfig != nil {
+		body["llm_config"] = opts.LLMConfig
+	}
+	if opts.Proxy != nil {
+		body["proxy"] = opts.Proxy
+	}
+	if opts.BypassCache {
+		body["bypass_cache"] = true
+	}
+	if opts.WebhookURL != "" {
+		body["webhook_url"] = opts.WebhookURL
+	}
+
+	data, err := c.http.Post("/v1/extract/async", body, 0)
+	if err != nil {
+		return nil, err
+	}
+	job, err := unmarshalWrapper[WrapperJob](data)
+	if err != nil {
+		return nil, err
+	}
+	if opts.Wait {
+		return c.waitWrapperJob(job.JobID, "extract", opts.PollInterval, opts.Timeout)
+	}
+	return job, nil
 }
 
 // Context builds context from a search query.
@@ -800,7 +970,9 @@ func (c *AsyncWebCrawler) Health() (map[string]interface{}, error) {
 // =========================================================================
 
 // Markdown gets clean markdown from a URL.
-func (c *AsyncWebCrawler) Markdown(url string, opts *MarkdownOptions) (*MarkdownResponse, error) {
+// Scrape fetches a page and returns clean markdown plus optional extras.
+// POST /v1/scrape (sync, single URL). Use ScrapeAsync for batch / webhooks.
+func (c *AsyncWebCrawler) Scrape(url string, opts *MarkdownOptions) (*MarkdownResponse, error) {
 	if opts == nil {
 		opts = &MarkdownOptions{}
 	}
@@ -830,11 +1002,71 @@ func (c *AsyncWebCrawler) Markdown(url string, opts *MarkdownOptions) (*Markdown
 		body["bypass_cache"] = true
 	}
 
-	data, err := c.http.Post("/v1/markdown", body, 0)
+	data, err := c.http.Post("/v1/scrape", body, 0)
 	if err != nil {
 		return nil, err
 	}
 	return unmarshalWrapper[MarkdownResponse](data)
+}
+
+// Markdown is the legacy alias for Scrape — same shape, same response.
+//
+// Deprecated: Use Scrape. /v1/markdown was renamed to /v1/scrape. Will be removed in 0.8.0.
+func (c *AsyncWebCrawler) Markdown(url string, opts *MarkdownOptions) (*MarkdownResponse, error) {
+	return c.Scrape(url, opts)
+}
+
+// ScrapeAsync submits an async scrape job over a list of URLs.
+// POST /v1/scrape/async. Returns a job; set opts.Wait = true to block until terminal.
+func (c *AsyncWebCrawler) ScrapeAsync(urls []string, opts *ScrapeAsyncOptions) (*WrapperJob, error) {
+	if opts == nil {
+		opts = &ScrapeAsyncOptions{}
+	}
+	strategy := opts.Strategy
+	if strategy == "" {
+		strategy = "browser"
+	}
+	fit := true
+	if opts.Fit != nil {
+		fit = *opts.Fit
+	}
+	priority := opts.Priority
+	if priority == 0 {
+		priority = 5
+	}
+
+	body := map[string]interface{}{"urls": urls, "strategy": strategy, "fit": fit, "priority": priority}
+	if len(opts.Include) > 0 {
+		body["include"] = opts.Include
+	}
+	if opts.CrawlerConfig != nil {
+		body["crawler_config"] = opts.CrawlerConfig
+	}
+	if opts.BrowserConfig != nil {
+		body["browser_config"] = opts.BrowserConfig
+	}
+	if opts.Proxy != nil {
+		body["proxy"] = opts.Proxy
+	}
+	if opts.BypassCache {
+		body["bypass_cache"] = true
+	}
+	if opts.WebhookURL != "" {
+		body["webhook_url"] = opts.WebhookURL
+	}
+
+	data, err := c.http.Post("/v1/scrape/async", body, 0)
+	if err != nil {
+		return nil, err
+	}
+	job, err := unmarshalWrapper[WrapperJob](data)
+	if err != nil {
+		return nil, err
+	}
+	if opts.Wait {
+		return c.waitWrapperJob(job.JobID, "markdown", opts.PollInterval, opts.Timeout)
+	}
+	return job, nil
 }
 
 // Screenshot captures a screenshot or PDF of a web page.
@@ -926,9 +1158,17 @@ func (c *AsyncWebCrawler) Map(url string, opts *MapOptions) (*MapResponse, error
 	if opts == nil {
 		opts = &MapOptions{}
 	}
-	mode := opts.Mode
-	if mode == "" {
-		mode = "default"
+	sources := opts.Sources
+	if sources == "" {
+		sources = "primary"
+	}
+	// Legacy Mode → Sources translation. Mode is deprecated.
+	if opts.Mode != "" {
+		if opts.Mode == "deep" {
+			sources = "extended"
+		} else {
+			sources = "primary"
+		}
 	}
 	extractHead := true
 	if opts.ExtractHead != nil {
@@ -936,7 +1176,7 @@ func (c *AsyncWebCrawler) Map(url string, opts *MapOptions) (*MapResponse, error
 	}
 
 	body := map[string]interface{}{
-		"url": url, "mode": mode,
+		"url": url, "sources": sources,
 		"include_subdomains": opts.IncludeSubdomains,
 		"extract_head":       extractHead,
 	}
@@ -965,11 +1205,10 @@ func (c *AsyncWebCrawler) Map(url string, opts *MapOptions) (*MapResponse, error
 
 // CrawlSite crawls an entire website. Always async.
 //
-// AI-assisted flagship flow: set opts.Criteria (plain English) and let the
-// LLM pick the scan strategy, generate URL filters, and (optionally) build an
-// extraction schema from a sample URL via opts.Extract. Poll one unified
-// endpoint for both scan and crawl phases with GetSiteCrawlJob(), or pass
-// opts.Wait = true to block until completion.
+// Deprecated: targets the deprecated /v1/crawl/site endpoint. Migrate to
+// Scan() with ScanOptions{Criteria: ...} for URL discovery, then pipe results
+// to ExtractAsync(url, &ExtractAsyncOptions{ExtraURLs: ...}) for structured
+// fields or ScrapeAsync(urls, ...) for markdown. Will be removed in 0.8.0.
 func (c *AsyncWebCrawler) CrawlSite(url string, opts *SiteCrawlOptions) (*SiteCrawlResponse, error) {
 	if opts == nil {
 		opts = &SiteCrawlOptions{}

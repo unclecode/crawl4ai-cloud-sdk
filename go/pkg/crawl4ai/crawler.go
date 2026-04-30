@@ -1741,3 +1741,87 @@ func unmarshalWrapper[T any](data map[string]interface{}) (*T, error) {
 func (c *AsyncWebCrawler) Close() error {
 	return nil
 }
+
+// ─── Discovery — wrapper-services platform ──────────────────────────
+//
+// One method, dispatches to any registered vertical via /v1/discovery/<service>.
+// `search` is live; `people` / `products` / `posts` / `videos` will land
+// via the same call shape — Discovery() never needs an SDK update when
+// a new vertical ships.
+
+// Discovery runs a vertical and returns the wire-shape response as a
+// generic map. For service="search", call DiscoverySearch instead to
+// get a typed *SearchResponse.
+func (c *AsyncWebCrawler) Discovery(service string, params map[string]interface{}) (map[string]interface{}, error) {
+	body := filterDiscoveryParams(params)
+	return c.http.Post("/v1/discovery/"+service, body, 60*time.Second)
+}
+
+// DiscoverySearch is the typed convenience wrapper for service="search".
+// Returns *SearchResponse parsed from /v1/discovery/search. For any
+// other vertical, use Discovery() and read the generic map.
+//
+// Example:
+//
+//	resp, err := crawler.DiscoverySearch(map[string]interface{}{
+//	    "query":   "best AI code review tools 2026",
+//	    "country": "us",
+//	})
+//	for _, hit := range resp.Hits {
+//	    fmt.Println(hit.Rank, hit.Title, hit.URL)
+//	}
+func (c *AsyncWebCrawler) DiscoverySearch(params map[string]interface{}) (*SearchResponse, error) {
+	body := filterDiscoveryParams(params)
+	data, err := c.http.Post("/v1/discovery/search", body, 60*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	// Round-trip the map → SearchResponse via JSON. Cheaper than
+	// hand-walking every field; the response is bounded (<100KB).
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("marshal discovery response: %w", err)
+	}
+	var sr SearchResponse
+	if err := json.Unmarshal(raw, &sr); err != nil {
+		return nil, fmt.Errorf("decode SearchResponse: %w", err)
+	}
+	return &sr, nil
+}
+
+// ListDiscoveryServices fetches the GET /v1/discovery registry.
+// Use this to feature-detect new verticals without an SDK update.
+func (c *AsyncWebCrawler) ListDiscoveryServices() ([]DiscoveryService, error) {
+	data, err := c.http.Get("/v1/discovery", nil)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("marshal discovery registry: %w", err)
+	}
+	var wire struct {
+		Services []DiscoveryService `json:"services"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		return nil, fmt.Errorf("decode discovery registry: %w", err)
+	}
+	return wire.Services, nil
+}
+
+// filterDiscoveryParams drops nil + empty-string optionals so the cache
+// key matches the dashboard playground exactly. Wire parity avoids
+// surprise misses between surfaces hitting the same params.
+func filterDiscoveryParams(params map[string]interface{}) map[string]interface{} {
+	body := map[string]interface{}{}
+	for k, v := range params {
+		if v == nil {
+			continue
+		}
+		if s, ok := v.(string); ok && s == "" {
+			continue
+		}
+		body[k] = v
+	}
+	return body
+}

@@ -1408,3 +1408,107 @@ type SiteCrawlOptions struct {
 	PollInterval time.Duration `json:"-"`
 	Timeout      time.Duration `json:"-"`
 }
+
+// ─── Discovery / Search response models ──────────────────────────────
+//
+// Mirror crawl4ai.serp.types one-for-one. JSON tags match the wire
+// shape (snake_case) so we can json.Unmarshal directly into these.
+
+type Sitelink struct {
+	URL         string  `json:"url"`
+	Title       string  `json:"title"`
+	Description *string `json:"description,omitempty"`
+}
+
+type SearchHit struct {
+	URL              string    `json:"url"`
+	Title            string    `json:"title"`
+	Rank             int       `json:"rank"`
+	Domain           string    `json:"domain"`
+	Snippet          *string   `json:"snippet,omitempty"`
+	CanonicalURL     *string   `json:"canonical_url,omitempty"`
+	SourceName       *string   `json:"source_name,omitempty"`
+	DisplayedURL     *string   `json:"displayed_url,omitempty"`
+	Breadcrumb       []string  `json:"breadcrumb"`
+	Favicon          *string   `json:"favicon,omitempty"`
+	Date             *string   `json:"date,omitempty"`
+	SourceType       string    `json:"source_type"`
+	IsFeatured       bool      `json:"is_featured"`
+	HighlightedTerms []string  `json:"highlighted_terms"`
+	Sitelinks        []Sitelink `json:"sitelinks"`
+	Rating           *float64  `json:"rating,omitempty"`
+	ReviewCount      *int      `json:"review_count,omitempty"`
+}
+
+type FeaturedSnippet struct {
+	Type        string  `json:"type"`
+	Text        string  `json:"text"`
+	SourceURL   *string `json:"source_url,omitempty"`
+	SourceTitle *string `json:"source_title,omitempty"`
+}
+
+type PaaItem struct {
+	Question      string  `json:"question"`
+	AnswerSnippet *string `json:"answer_snippet,omitempty"`
+	SourceURL     *string `json:"source_url,omitempty"`
+	SourceTitle   *string `json:"source_title,omitempty"`
+}
+
+type KnowledgeGraph struct {
+	Title       string                 `json:"title"`
+	Subtitle    *string                `json:"subtitle,omitempty"`
+	Description *string                `json:"description,omitempty"`
+	Website     *string                `json:"website,omitempty"`
+	Attributes  map[string]interface{} `json:"attributes"`
+}
+
+type AiOverview struct {
+	Text    string     `json:"text"`
+	Sources []Sitelink `json:"sources"`
+}
+
+type ResultStats struct {
+	TotalResults      *int     `json:"total_results,omitempty"`
+	SearchTimeSeconds *float64 `json:"search_time_seconds,omitempty"`
+}
+
+type Pagination struct {
+	CurrentPage    int  `json:"current_page"`
+	HasNextPage    bool `json:"has_next_page"`
+	ResultsPerPage int  `json:"results_per_page"`
+}
+
+type SearchMetadata struct {
+	Query          string  `json:"query"`
+	EffectiveQuery string  `json:"effective_query"`
+	Country        *string `json:"country,omitempty"`
+	Language       *string `json:"language,omitempty"`
+	Location       *string `json:"location,omitempty"`
+	Mode           string  `json:"mode"`
+	TimePeriod     *string `json:"time_period,omitempty"`
+	FetchedAt      *string `json:"fetched_at,omitempty"`
+}
+
+// SearchResponse is the typed return of crawler.Discovery("search", ...).
+// Every section nullable — Google may not render PAA / KG / AI Overview
+// for a given query.
+type SearchResponse struct {
+	Metadata          SearchMetadata   `json:"metadata"`
+	Hits              []SearchHit      `json:"hits"`
+	FeaturedSnippet   *FeaturedSnippet `json:"featured_snippet,omitempty"`
+	RelatedQuestions  []PaaItem        `json:"related_questions"`
+	RelatedSearches   []string         `json:"related_searches"`
+	KnowledgeGraph    *KnowledgeGraph  `json:"knowledge_graph,omitempty"`
+	AiOverview        *AiOverview      `json:"ai_overview,omitempty"`
+	ResultStats       ResultStats      `json:"result_stats"`
+	Pagination        Pagination       `json:"pagination"`
+}
+
+// DiscoveryService is one entry from GET /v1/discovery.
+type DiscoveryService struct {
+	Name           string                 `json:"name"`
+	Description    string                 `json:"description"`
+	CreditCost     int                    `json:"credit_cost"`
+	RequestSchema  map[string]interface{} `json:"request_schema"`
+	ResponseSchema map[string]interface{} `json:"response_schema"`
+}

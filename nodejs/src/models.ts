@@ -1448,3 +1448,227 @@ export function isEnrichJobPaused(job: EnrichJobStatus): boolean {
 export function isEnrichJobSuccessful(job: EnrichJobStatus): boolean {
   return job.status === 'completed' || job.status === 'partial';
 }
+
+
+// ─── Discovery / Search response models ────────────────────────────────────
+//
+// Mirror crawl4ai.serp.types one-for-one. The cloud serializes these via
+// Pydantic; the SDK deserializes as plain TS interfaces.
+
+export interface Sitelink {
+  url: string;
+  title: string;
+  description?: string | null;
+}
+
+export interface SearchHit {
+  url: string;
+  title: string;
+  rank: number;
+  domain: string;
+  snippet?: string | null;
+  canonicalUrl?: string | null;
+  sourceName?: string | null;
+  displayedUrl?: string | null;
+  breadcrumb: string[];
+  favicon?: string | null;
+  date?: string | null;
+  sourceType: string;
+  isFeatured: boolean;
+  highlightedTerms: string[];
+  sitelinks: Sitelink[];
+  rating?: number | null;
+  reviewCount?: number | null;
+}
+
+export interface FeaturedSnippet {
+  type: string;
+  text: string;
+  sourceUrl?: string | null;
+  sourceTitle?: string | null;
+}
+
+export interface PaaItem {
+  question: string;
+  answerSnippet?: string | null;
+  sourceUrl?: string | null;
+  sourceTitle?: string | null;
+}
+
+export interface KnowledgeGraph {
+  title: string;
+  subtitle?: string | null;
+  description?: string | null;
+  website?: string | null;
+  attributes: Record<string, unknown>;
+}
+
+export interface AiOverview {
+  text: string;
+  sources: Sitelink[];
+}
+
+export interface ResultStats {
+  totalResults?: number | null;
+  searchTimeSeconds?: number | null;
+}
+
+export interface Pagination {
+  currentPage: number;
+  hasNextPage: boolean;
+  resultsPerPage: number;
+}
+
+export interface SearchMetadata {
+  query: string;
+  effectiveQuery: string;
+  country?: string | null;
+  language?: string | null;
+  location?: string | null;
+  mode: string;
+  timePeriod?: string | null;
+  fetchedAt?: string | null;
+}
+
+export interface SearchResponse {
+  metadata: SearchMetadata;
+  hits: SearchHit[];
+  featuredSnippet?: FeaturedSnippet | null;
+  relatedQuestions: PaaItem[];
+  relatedSearches: string[];
+  knowledgeGraph?: KnowledgeGraph | null;
+  aiOverview?: AiOverview | null;
+  resultStats: ResultStats;
+  pagination: Pagination;
+}
+
+export interface DiscoveryService {
+  name: string;
+  description: string;
+  creditCost: number;
+  requestSchema: Record<string, unknown>;
+  responseSchema: Record<string, unknown>;
+}
+
+function sitelinkFromDict(d: Record<string, unknown>): Sitelink {
+  return {
+    url: (d.url as string) ?? '',
+    title: (d.title as string) ?? '',
+    description: (d.description as string | null) ?? null,
+  };
+}
+
+function searchHitFromDict(d: Record<string, unknown>): SearchHit {
+  return {
+    url: (d.url as string) ?? '',
+    title: (d.title as string) ?? '',
+    rank: (d.rank as number) ?? 0,
+    domain: (d.domain as string) ?? '',
+    snippet: (d.snippet as string | null) ?? null,
+    canonicalUrl: (d.canonical_url as string | null) ?? null,
+    sourceName: (d.source_name as string | null) ?? null,
+    displayedUrl: (d.displayed_url as string | null) ?? null,
+    breadcrumb: ((d.breadcrumb as string[]) ?? []),
+    favicon: (d.favicon as string | null) ?? null,
+    date: (d.date as string | null) ?? null,
+    sourceType: (d.source_type as string) ?? 'organic',
+    isFeatured: Boolean(d.is_featured),
+    highlightedTerms: ((d.highlighted_terms as string[]) ?? []),
+    sitelinks: ((d.sitelinks as Record<string, unknown>[]) ?? []).map(sitelinkFromDict),
+    rating: (d.rating as number | null) ?? null,
+    reviewCount: (d.review_count as number | null) ?? null,
+  };
+}
+
+function featuredSnippetFromDict(d: Record<string, unknown>): FeaturedSnippet {
+  return {
+    type: (d.type as string) ?? '',
+    text: (d.text as string) ?? '',
+    sourceUrl: (d.source_url as string | null) ?? null,
+    sourceTitle: (d.source_title as string | null) ?? null,
+  };
+}
+
+function paaItemFromDict(d: Record<string, unknown>): PaaItem {
+  return {
+    question: (d.question as string) ?? '',
+    answerSnippet: (d.answer_snippet as string | null) ?? null,
+    sourceUrl: (d.source_url as string | null) ?? null,
+    sourceTitle: (d.source_title as string | null) ?? null,
+  };
+}
+
+function knowledgeGraphFromDict(d: Record<string, unknown>): KnowledgeGraph {
+  return {
+    title: (d.title as string) ?? '',
+    subtitle: (d.subtitle as string | null) ?? null,
+    description: (d.description as string | null) ?? null,
+    website: (d.website as string | null) ?? null,
+    attributes: ((d.attributes as Record<string, unknown>) ?? {}),
+  };
+}
+
+function aiOverviewFromDict(d: Record<string, unknown>): AiOverview {
+  return {
+    text: (d.text as string) ?? '',
+    sources: ((d.sources as Record<string, unknown>[]) ?? []).map(sitelinkFromDict),
+  };
+}
+
+function resultStatsFromDict(d: Record<string, unknown>): ResultStats {
+  return {
+    totalResults: (d.total_results as number | null) ?? null,
+    searchTimeSeconds: (d.search_time_seconds as number | null) ?? null,
+  };
+}
+
+function paginationFromDict(d: Record<string, unknown>): Pagination {
+  return {
+    currentPage: (d.current_page as number) ?? 1,
+    hasNextPage: Boolean(d.has_next_page),
+    resultsPerPage: (d.results_per_page as number) ?? 0,
+  };
+}
+
+function searchMetadataFromDict(d: Record<string, unknown>): SearchMetadata {
+  return {
+    query: (d.query as string) ?? '',
+    effectiveQuery: (d.effective_query as string) ?? '',
+    country: (d.country as string | null) ?? null,
+    language: (d.language as string | null) ?? null,
+    location: (d.location as string | null) ?? null,
+    mode: (d.mode as string) ?? 'rich',
+    timePeriod: (d.time_period as string | null) ?? null,
+    fetchedAt: (d.fetched_at as string | null) ?? null,
+  };
+}
+
+export function searchResponseFromDict(d: Record<string, unknown>): SearchResponse {
+  return {
+    metadata: searchMetadataFromDict((d.metadata as Record<string, unknown>) ?? {}),
+    hits: ((d.hits as Record<string, unknown>[]) ?? []).map(searchHitFromDict),
+    featuredSnippet: d.featured_snippet
+      ? featuredSnippetFromDict(d.featured_snippet as Record<string, unknown>)
+      : null,
+    relatedQuestions: ((d.related_questions as Record<string, unknown>[]) ?? []).map(paaItemFromDict),
+    relatedSearches: ((d.related_searches as string[]) ?? []),
+    knowledgeGraph: d.knowledge_graph
+      ? knowledgeGraphFromDict(d.knowledge_graph as Record<string, unknown>)
+      : null,
+    aiOverview: d.ai_overview
+      ? aiOverviewFromDict(d.ai_overview as Record<string, unknown>)
+      : null,
+    resultStats: resultStatsFromDict((d.result_stats as Record<string, unknown>) ?? {}),
+    pagination: paginationFromDict((d.pagination as Record<string, unknown>) ?? {}),
+  };
+}
+
+export function discoveryServiceFromDict(d: Record<string, unknown>): DiscoveryService {
+  return {
+    name: (d.name as string) ?? '',
+    description: (d.description as string) ?? '',
+    creditCost: (d.credit_cost as number) ?? 1,
+    requestSchema: ((d.request_schema as Record<string, unknown>) ?? {}),
+    responseSchema: ((d.response_schema as Record<string, unknown>) ?? {}),
+  };
+}

@@ -1445,3 +1445,259 @@ class WrapperJob:
             started_at=data.get("started_at"),
             completed_at=data.get("completed_at"),
         )
+
+
+# ─── Discovery / Search response models ──────────────────────────────
+#
+# Mirror crawl4ai.serp.types one-for-one but as plain dataclasses with
+# `from_dict` constructors, matching the rest of this SDK. The cloud
+# already serialises these via Pydantic; we deserialise as dataclasses
+# so consumers stay free of the Pydantic dependency.
+
+@dataclass
+class Sitelink:
+    """A subpage Google clusters under a parent result."""
+    url: str
+    title: str
+    description: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Sitelink":
+        return cls(
+            url=data.get("url", ""),
+            title=data.get("title", ""),
+            description=data.get("description"),
+        )
+
+
+@dataclass
+class SearchHit:
+    """One ranked SERP result. Every field a pre-crawl agent signal."""
+    url: str
+    title: str
+    rank: int
+    domain: str
+    snippet: Optional[str] = None
+    canonical_url: Optional[str] = None
+    source_name: Optional[str] = None
+    displayed_url: Optional[str] = None
+    breadcrumb: List[str] = field(default_factory=list)
+    favicon: Optional[str] = None
+    date: Optional[str] = None
+    source_type: str = "organic"
+    is_featured: bool = False
+    highlighted_terms: List[str] = field(default_factory=list)
+    sitelinks: List[Sitelink] = field(default_factory=list)
+    rating: Optional[float] = None
+    review_count: Optional[int] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SearchHit":
+        return cls(
+            url=data.get("url", ""),
+            title=data.get("title", ""),
+            rank=data.get("rank", 0),
+            domain=data.get("domain", ""),
+            snippet=data.get("snippet"),
+            canonical_url=data.get("canonical_url"),
+            source_name=data.get("source_name"),
+            displayed_url=data.get("displayed_url"),
+            breadcrumb=list(data.get("breadcrumb") or []),
+            favicon=data.get("favicon"),
+            date=data.get("date"),
+            source_type=data.get("source_type", "organic"),
+            is_featured=bool(data.get("is_featured", False)),
+            highlighted_terms=list(data.get("highlighted_terms") or []),
+            sitelinks=[Sitelink.from_dict(s) for s in (data.get("sitelinks") or [])],
+            rating=data.get("rating"),
+            review_count=data.get("review_count"),
+        )
+
+
+@dataclass
+class FeaturedSnippet:
+    """Top-of-SERP answer box."""
+    type: str
+    text: str
+    source_url: Optional[str] = None
+    source_title: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "FeaturedSnippet":
+        return cls(
+            type=data.get("type", ""),
+            text=data.get("text", ""),
+            source_url=data.get("source_url"),
+            source_title=data.get("source_title"),
+        )
+
+
+@dataclass
+class PaaItem:
+    """One People-Also-Ask entry."""
+    question: str
+    answer_snippet: Optional[str] = None
+    source_url: Optional[str] = None
+    source_title: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "PaaItem":
+        return cls(
+            question=data.get("question", ""),
+            answer_snippet=data.get("answer_snippet"),
+            source_url=data.get("source_url"),
+            source_title=data.get("source_title"),
+        )
+
+
+@dataclass
+class KnowledgeGraph:
+    """Right-rail entity panel."""
+    title: str
+    subtitle: Optional[str] = None
+    description: Optional[str] = None
+    website: Optional[str] = None
+    attributes: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "KnowledgeGraph":
+        return cls(
+            title=data.get("title", ""),
+            subtitle=data.get("subtitle"),
+            description=data.get("description"),
+            website=data.get("website"),
+            attributes=dict(data.get("attributes") or {}),
+        )
+
+
+@dataclass
+class AiOverview:
+    """Google's generative answer plus citations."""
+    text: str
+    sources: List[Sitelink] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AiOverview":
+        return cls(
+            text=data.get("text", ""),
+            sources=[Sitelink.from_dict(s) for s in (data.get("sources") or [])],
+        )
+
+
+@dataclass
+class ResultStats:
+    """Parsed `About 38,400,000 results (0.42 seconds)`."""
+    total_results: Optional[int] = None
+    search_time_seconds: Optional[float] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ResultStats":
+        return cls(
+            total_results=data.get("total_results"),
+            search_time_seconds=data.get("search_time_seconds"),
+        )
+
+
+@dataclass
+class Pagination:
+    """Page-walk metadata."""
+    current_page: int = 1
+    has_next_page: bool = False
+    results_per_page: int = 0
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Pagination":
+        return cls(
+            current_page=data.get("current_page", 1),
+            has_next_page=bool(data.get("has_next_page", False)),
+            results_per_page=data.get("results_per_page", 0),
+        )
+
+
+@dataclass
+class SearchMetadata:
+    """Echoed-back request + observation timestamp."""
+    query: str
+    effective_query: str
+    country: Optional[str] = None
+    language: Optional[str] = None
+    location: Optional[str] = None
+    mode: str = "rich"
+    time_period: Optional[str] = None
+    fetched_at: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SearchMetadata":
+        return cls(
+            query=data.get("query", ""),
+            effective_query=data.get("effective_query", ""),
+            country=data.get("country"),
+            language=data.get("language"),
+            location=data.get("location"),
+            mode=data.get("mode", "rich"),
+            time_period=data.get("time_period"),
+            fetched_at=data.get("fetched_at"),
+        )
+
+
+@dataclass
+class SearchResponse:
+    """Top-level parsed SERP — every section nullable.
+
+    Returned by `crawler.discovery("search", …)`. Sections that Google
+    didn't render come back as None / empty list — never raise.
+    """
+    metadata: SearchMetadata
+    hits: List[SearchHit] = field(default_factory=list)
+    featured_snippet: Optional[FeaturedSnippet] = None
+    related_questions: List[PaaItem] = field(default_factory=list)
+    related_searches: List[str] = field(default_factory=list)
+    knowledge_graph: Optional[KnowledgeGraph] = None
+    ai_overview: Optional[AiOverview] = None
+    result_stats: ResultStats = field(default_factory=ResultStats)
+    pagination: Pagination = field(default_factory=Pagination)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SearchResponse":
+        return cls(
+            metadata=SearchMetadata.from_dict(data.get("metadata") or {}),
+            hits=[SearchHit.from_dict(h) for h in (data.get("hits") or [])],
+            featured_snippet=(
+                FeaturedSnippet.from_dict(data["featured_snippet"])
+                if data.get("featured_snippet") else None
+            ),
+            related_questions=[
+                PaaItem.from_dict(q) for q in (data.get("related_questions") or [])
+            ],
+            related_searches=list(data.get("related_searches") or []),
+            knowledge_graph=(
+                KnowledgeGraph.from_dict(data["knowledge_graph"])
+                if data.get("knowledge_graph") else None
+            ),
+            ai_overview=(
+                AiOverview.from_dict(data["ai_overview"])
+                if data.get("ai_overview") else None
+            ),
+            result_stats=ResultStats.from_dict(data.get("result_stats") or {}),
+            pagination=Pagination.from_dict(data.get("pagination") or {}),
+        )
+
+
+@dataclass
+class DiscoveryService:
+    """One entry from the `GET /v1/discovery` registry."""
+    name: str
+    description: str
+    credit_cost: int
+    request_schema: Dict[str, Any] = field(default_factory=dict)
+    response_schema: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "DiscoveryService":
+        return cls(
+            name=data.get("name", ""),
+            description=data.get("description", ""),
+            credit_cost=data.get("credit_cost", 1),
+            request_schema=dict(data.get("request_schema") or {}),
+            response_schema=dict(data.get("response_schema") or {}),
+        )

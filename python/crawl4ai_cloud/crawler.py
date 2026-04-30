@@ -2098,3 +2098,80 @@ class AsyncWebCrawler:
     async def close(self):
         """Close the HTTP client."""
         await self._http.close()
+
+    # =========================================================================
+    # Discovery — wrapper-services platform: /v1/discovery/<service>
+    # =========================================================================
+    #
+    # One method, dispatches to any registered vertical. `search` is live;
+    # `people`, `products`, `posts`, `videos` will land via the same call shape.
+    # See `list_discovery_services()` for the registry.
+
+    async def discovery(
+        self,
+        service: str,
+        **params: Any,
+    ) -> Any:
+        """Run a Discovery vertical and return the typed response.
+
+        ``POST /v1/discovery/<service>`` — the wrapper-services dispatcher.
+        New verticals don't add SDK methods; they become a new value for
+        ``service``.
+
+        Args:
+            service: Vertical name (``"search"`` today; ``"people"`` /
+                ``"products"`` / ``"posts"`` / ``"videos"`` to follow).
+            **params: Per-vertical request fields. For ``service="search"``:
+                ``query`` (required), ``country``, ``language``, ``location``,
+                ``num``, ``start``, ``site``, ``mode``, ``time_period``,
+                ``bypass_cache``. See the Discovery docs for full schemas.
+
+        Returns:
+            ``SearchResponse`` for ``service="search"``. Generic ``dict`` for
+            verticals whose typed response classes don't exist yet — callers
+            can index it the same way the API returns.
+
+        Example:
+            >>> response = await crawler.discovery(
+            ...     "search",
+            ...     query="best AI code review tools 2026",
+            ...     country="us",
+            ... )
+            >>> for hit in response.hits:
+            ...     print(hit.rank, hit.title, hit.url)
+        """
+        from crawl4ai_cloud.models import SearchResponse
+
+        # Drop None / empty-string optionals so the cache key matches what
+        # `runDiscovery()` and the dashboard playground actually send. Wire
+        # parity with the playground avoids surprise cache-misses between
+        # surfaces that hit the same params.
+        body = {k: v for k, v in params.items() if v is not None and v != ""}
+        data = await self._http.request(
+            "POST", f"/v1/discovery/{service}", json=body,
+        )
+
+        # Typed response per vertical. As more verticals ship typed models,
+        # extend this dispatch — generic dict otherwise.
+        if service == "search":
+            return SearchResponse.from_dict(data)
+        return data
+
+    async def list_discovery_services(self) -> List["DiscoveryService"]:
+        """Fetch the Discovery service registry.
+
+        ``GET /v1/discovery`` — returns every vertical the cloud currently
+        ships, plus its request/response JSON schemas. Use this to feature-
+        detect new verticals without an SDK update.
+
+        Returns:
+            List of :class:`DiscoveryService` entries.
+
+        Example:
+            >>> services = await crawler.list_discovery_services()
+            >>> for svc in services:
+            ...     print(svc.name, "—", svc.description)
+        """
+        from crawl4ai_cloud.models import DiscoveryService
+        data = await self._http.request("GET", "/v1/discovery")
+        return [DiscoveryService.from_dict(s) for s in (data.get("services") or [])]

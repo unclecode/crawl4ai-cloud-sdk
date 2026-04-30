@@ -17,7 +17,7 @@ Example:
     ```
 """
 
-__version__ = "0.6.1"
+__version__ = "0.8.0"
 
 # Main crawler class
 from .crawler import AsyncWebCrawler
@@ -85,6 +85,18 @@ from .models import (
     EnrichEvent,
     ENRICH_TERMINAL_STATUSES,
     ENRICH_PAUSED_STATUSES,
+    # Discovery / Search
+    Sitelink,
+    SearchHit,
+    FeaturedSnippet,
+    PaaItem,
+    KnowledgeGraph,
+    AiOverview,
+    ResultStats,
+    Pagination,
+    SearchMetadata,
+    SearchResponse,
+    DiscoveryService,
 )
 
 # Errors

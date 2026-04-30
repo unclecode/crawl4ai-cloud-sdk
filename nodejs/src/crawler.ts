@@ -68,6 +68,11 @@ import {
   enrichEventFromDict,
   isEnrichJobComplete,
   ENRICH_PAUSED_STATUSES,
+  // Discovery / Search
+  SearchResponse,
+  DiscoveryService,
+  searchResponseFromDict,
+  discoveryServiceFromDict,
 } from './models';
 import {
   CrawlerRunConfig,
@@ -1463,6 +1468,70 @@ export class AsyncWebCrawler {
     const params: Record<string, string | number> = { limit, offset };
     const data = await this.http.get('/v1/enrich/jobs', params);
     return ((data.jobs || []) as Record<string, unknown>[]).map(enrichJobListItemFromDict);
+  }
+
+  // ───────────────────────────────────────────────────────────────────
+  // Discovery — wrapper-services platform: /v1/discovery/<service>
+  // ───────────────────────────────────────────────────────────────────
+  //
+  // One method, dispatches to any registered vertical. `search` is live;
+  // `people` / `products` / `posts` / `videos` will land via the same
+  // call shape — your code never updates when a new vertical ships.
+
+  /**
+   * Run a Discovery vertical and return the typed response.
+   *
+   * `POST /v1/discovery/<service>` — the wrapper-services dispatcher.
+   * New verticals don't add SDK methods; they become a new value for
+   * the `service` argument.
+   *
+   * @param service - Vertical name (`"search"` today; `"people"` /
+   *   `"products"` / `"posts"` / `"videos"` to follow).
+   * @param params - Per-vertical request fields. For `service="search"`:
+   *   `query` (required), `country`, `language`, `location`, `num`,
+   *   `start`, `site`, `mode`, `time_period`, `bypass_cache`.
+   *
+   * @returns `SearchResponse` for `service="search"`. Generic object for
+   *   verticals whose typed response shapes don't exist yet.
+   *
+   * @example
+   * const response = await crawler.discovery("search", {
+   *   query: "best AI code review tools 2026",
+   *   country: "us",
+   * });
+   * for (const hit of response.hits) {
+   *   console.log(hit.rank, hit.title, hit.url);
+   * }
+   */
+  async discovery(
+    service: string,
+    params: Record<string, unknown> = {},
+  ): Promise<SearchResponse | Record<string, unknown>> {
+    // Drop null / empty-string optionals so the cache key matches the
+    // dashboard playground exactly. Wire parity avoids surprise misses
+    // between surfaces hitting the same params.
+    const body: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== null && v !== undefined && v !== '') body[k] = v;
+    }
+    const data = await this.http.post(`/v1/discovery/${service}`, body) as Record<string, unknown>;
+    if (service === 'search') {
+      return searchResponseFromDict(data);
+    }
+    return data;
+  }
+
+  /**
+   * Fetch the Discovery service registry.
+   *
+   * `GET /v1/discovery` — returns every vertical the cloud currently
+   * ships, plus its request/response JSON schemas. Use this to
+   * feature-detect new verticals without an SDK update.
+   */
+  async listDiscoveryServices(): Promise<DiscoveryService[]> {
+    const data = await this.http.get('/v1/discovery') as Record<string, unknown>;
+    const services = (data.services as Record<string, unknown>[]) || [];
+    return services.map(discoveryServiceFromDict);
   }
 
   /**

@@ -5,6 +5,22 @@ The fastest way to turn any URL into markdown, screenshots, structured data, or 
 [![PyPI version](https://badge.fury.io/py/crawl4ai-cloud-sdk.svg)](https://badge.fury.io/py/crawl4ai-cloud-sdk)
 [![Python Version](https://img.shields.io/pypi/pyversions/crawl4ai-cloud-sdk)](https://pypi.org/project/crawl4ai-cloud-sdk/)
 
+## What's new in 0.8.0
+
+- **`discovery()`** — new wrapper-services platform method. One call to dispatch to any vertical:
+  ```python
+  response = await crawler.discovery(
+      "search",
+      query="best AI code review tools 2026",
+      country="us",
+  )
+  for hit in response.hits: print(hit.rank, hit.title, hit.url)
+  if response.ai_overview: print(response.ai_overview.text)
+  ```
+  Live verticals: `search` (Google SERP — hits + AI Overview + Featured Snippet + Knowledge Graph + PAA + related searches). Coming next: `people`, `products`, `posts`, `videos` — same call shape, no SDK update needed when they ship.
+- **`list_discovery_services()`** — fetch the live registry to feature-detect new verticals without an SDK update.
+- New typed models: `SearchResponse`, `SearchHit`, `Sitelink`, `FeaturedSnippet`, `PaaItem`, `KnowledgeGraph`, `AiOverview`, `ResultStats`, `Pagination`, `SearchMetadata`, `DiscoveryService`.
+
 ## What's new in 0.7.0
 
 - **`scrape()` + `scrape_many()`** are the canonical methods (replacing `markdown` / `markdown_many`). Same shape, same response — they hit the new `/v1/scrape(/async)` endpoints.

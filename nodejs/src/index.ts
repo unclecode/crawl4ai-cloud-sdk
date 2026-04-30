@@ -12,7 +12,7 @@
  * ```
  */
 
-export const VERSION = '0.6.1';
+export const VERSION = '0.8.0';
 
 // Main crawler class
 export { AsyncWebCrawler } from './crawler';
@@ -64,6 +64,18 @@ export type {
   EnrichJobListItem,
   EnrichEvent,
   EnrichEventType,
+  // Discovery / Search
+  Sitelink,
+  SearchHit,
+  FeaturedSnippet,
+  PaaItem,
+  KnowledgeGraph,
+  AiOverview,
+  ResultStats,
+  Pagination,
+  SearchMetadata,
+  SearchResponse,
+  DiscoveryService,
 } from './models';
 export type {
   // Crawler enrich method options (defined in crawler.ts)

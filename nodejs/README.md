@@ -33,13 +33,14 @@ console.log(page.markdown);
 const shot = await c.screenshot('https://example.com');
 // shot.screenshot is base64 PNG
 
-// Extract structured data — AUTO picks css_schema vs llm
+// Extract structured data — AUTO picks css_schema vs llm.
+// wait: true auto-hydrates job.results from per-URL S3.
 const job = await c.extractMany('https://news.ycombinator.com', {
   method: 'auto',
   query: 'get each story title, URL, and points',
   wait: true,
 });
-for (const r of job.results ?? []) console.log(r.data);
+for (const r of job.results ?? []) console.log(r.extractedContent);
 
 // Discover all URLs on a domain
 const sitemap = await c.map('https://docs.python.org', { sources: 'primary' });
@@ -71,8 +72,27 @@ const exJob = await c.extractMany(base, {
   query: 'book title, price, rating',
   wait: true,
 });
-for (const r of exJob.results ?? []) console.log(r.data);
+for (const r of exJob.results ?? []) console.log(r.extractedContent);
 ```
+
+## Multi-URL fan-out — what happens under the hood
+
+`scrapeMany(urls)`, `screenshotMany(urls)`, and `extractMany(url, { extraUrls })` all decompose into N independent child jobs that distribute across the worker pool. Throughput scales with pool size, not with how many URLs you submitted.
+
+```typescript
+const job = await c.scrapeMany(urls, { wait: false });             // returns immediately
+// Poll to inspect per-URL state without downloading the data:
+const status = await c.getScrapeJob(job.jobId);                    // WrapperJob
+for (const u of status.urlStatuses ?? []) {
+  console.log(u.index, u.url, u.status, u.durationMs, u.error);
+}
+
+// Fetch one URL's full result on demand (recipe-agnostic — works for any wrapper)
+const result = await c.getPerUrlResult(job.jobId, 0);              // CrawlResult
+console.log(result.markdown);
+```
+
+`wait: true` does this for you: poll → wait until terminal → call `getPerUrlResult` for each URL in parallel → populate `job.results`. Failed URLs become `CrawlResult` stubs (`success=false` + `errorMessage`) so `job.results.length === job.urlStatuses.length`.
 
 ## Wrapper API Reference
 

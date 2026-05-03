@@ -54,7 +54,8 @@ async def main():
         shot = await crawler.screenshot("https://example.com")
         # shot.screenshot is base64-encoded PNG
 
-        # Extract structured data — AUTO picks css_schema vs llm
+        # Extract structured data — AUTO picks css_schema vs llm.
+        # wait=True auto-hydrates job.results from per-URL S3.
         job = await crawler.extract_many(
             url="https://news.ycombinator.com",
             method="auto",
@@ -62,7 +63,7 @@ async def main():
             wait=True,
         )
         for r in job.results:
-            print(r.data)
+            print(r.extracted_content)  # parsed JSON records as a string
 
         # Discover all URLs on a domain
         sitemap = await crawler.map("https://docs.python.org", sources="primary")
@@ -102,8 +103,26 @@ async with AsyncWebCrawler(api_key="sk_live_...") as crawler:
         wait=True,
     )
     for r in ex_job.results:
-        print(r.data)
+        print(r.extracted_content)
 ```
+
+## Multi-URL fan-out — what happens under the hood
+
+`scrape_many(urls=[...])`, `screenshot_many(urls=[...])`, and `extract_many(url=base, extra_urls=[...])` all decompose into N independent child jobs that distribute across the worker pool. Throughput scales with pool size, not with how many URLs you submitted.
+
+```python
+job = await crawler.scrape_many(urls, wait=False)            # returns immediately
+# Poll to inspect per-URL state without downloading the data:
+status = await crawler.get_scrape_job(job.job_id)            # WrapperJob
+for u in status.url_statuses or []:
+    print(u.index, u.url, u.status, u.duration_ms, u.error)
+
+# Fetch one URL's full result on demand (recipe-agnostic — works for any wrapper)
+result = await crawler.get_per_url_result(job.job_id, 0)     # CrawlResult
+print(result.markdown)
+```
+
+`wait=True` does this for you: poll → wait until terminal → call `get_per_url_result` for each URL in parallel → populate `job.results`. Failed URLs become `CrawlResult` stubs (`success=False` + `error_message`) so `len(job.results) == len(job.url_statuses)`.
 
 ## Wrapper API Reference
 

@@ -51,6 +51,7 @@ fmt.Printf("Base64 PNG length: %d\n", len(shot.Screenshot))
 ### Extract Structured Data — base URL + followers
 
 ```go
+// Wait: true auto-hydrates job.Results from per-URL S3 in parallel.
 job, _ := c.ExtractAsync("https://books.toscrape.com", &crawl4ai.ExtractAsyncOptions{
     ExtractOptions: crawl4ai.ExtractOptions{
         Query:  "book title, price, rating",
@@ -60,9 +61,28 @@ job, _ := c.ExtractAsync("https://books.toscrape.com", &crawl4ai.ExtractAsyncOpt
     Timeout: 3 * time.Minute,
 })
 for _, r := range job.Results {
-    fmt.Printf("%v\n", r.Data)
+    fmt.Println(r.ExtractedContent)  // parsed JSON records as a string
 }
 ```
+
+### Multi-URL fan-out — what happens under the hood
+
+`ScrapeAsync(urls)`, `ScreenshotAsync(urls)`, and `ExtractAsync(url, &ExtractAsyncOptions{ExtraURLs: ...})` decompose into N independent child jobs that distribute across the worker pool. Throughput scales with pool size, not with how many URLs you submitted.
+
+```go
+job, _ := c.ScrapeAsync(urls, &crawl4ai.ScrapeAsyncOptions{Wait: false})  // returns immediately
+// Poll to inspect per-URL state without downloading the data:
+status, _ := c.GetScrapeJob(job.JobID)            // *WrapperJob
+for _, u := range status.URLStatuses {
+    fmt.Println(u.Index, u.URL, u.Status, u.DurationMs, u.Error)
+}
+
+// Fetch one URL's full result on demand (recipe-agnostic — works for any wrapper)
+result, _ := c.GetPerUrlResult(job.JobID, 0)      // *CrawlResult
+fmt.Println(result.Markdown)
+```
+
+`Wait: true` does this for you: poll → wait until terminal → call `GetPerUrlResult` for each URL in parallel → populate `job.Results`. Failed URLs become `CrawlResult` stubs (`Success=false` + `ErrorMessage`) so `len(job.Results) == len(job.URLStatuses)`.
 
 ### Discover URLs on a Domain
 

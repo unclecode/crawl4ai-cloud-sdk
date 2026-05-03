@@ -69,6 +69,7 @@ from .models import (
     SiteCrawlProgress,
     WrapperJob,
     WrapperJobProgress,
+    UrlStatus,
     # Enrich v2 API models
     EnrichEntity,
     EnrichCriterion,
@@ -127,7 +128,7 @@ __all__ = [
     # Wrapper API models
     "WrapperUsage", "MarkdownResponse", "ScreenshotResponse", "ExtractResponse",
     "MapUrlInfo", "MapResponse", "SiteCrawlResponse", "SiteCrawlJobStatus",
-    "SiteCrawlProgress", "WrapperJob", "WrapperJobProgress",
+    "SiteCrawlProgress", "WrapperJob", "WrapperJobProgress", "UrlStatus",
     # Enrich v2
     "EnrichEntity", "EnrichCriterion", "EnrichFeature", "EnrichPlan",
     "EnrichUrlCandidate", "EnrichRow", "EnrichPhaseData", "EnrichProgress",

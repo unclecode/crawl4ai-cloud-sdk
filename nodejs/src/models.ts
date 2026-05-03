@@ -890,12 +890,40 @@ export interface WrapperJobProgress {
   failed: number;
 }
 
+/**
+ * Per-URL status snapshot from a multi-URL fan-out parent.
+ *
+ * Returned in submission order under `WrapperJob.urlStatuses`. Status is one
+ * of `pending` / `done` / `failed`. For terminal entries, `durationMs` is
+ * set; for failures, `error` carries the upstream message.
+ */
+export interface UrlStatus {
+  index: number;
+  url: string;
+  status: 'pending' | 'done' | 'failed' | string;
+  durationMs?: number | null;
+  error?: string | null;
+}
+
 export interface WrapperJob {
   jobId: string;
   status: string;
   progress?: WrapperJobProgress;
   progressPercent: number;
   urlsCount: number;
+  /**
+   * Per-URL state for multi-URL fan-out parents (submission order). Null on
+   * single-URL jobs. Populated by every wrapper async GET endpoint.
+   */
+  urlStatuses?: UrlStatus[];
+  /**
+   * Populated by SDK helpers (e.g. `wait: true`) after the parent
+   * terminalizes. The cloud GET endpoints do not inline this — fetch
+   * per-URL data lazily via {@link AsyncWebCrawler.getPerUrlResult} or
+   * download the ZIP via `downloadUrl`.
+   */
+  results?: CrawlResult[];
+  downloadUrl?: string;
   error?: string;
   createdAt?: string;
   startedAt?: string;
@@ -1107,12 +1135,24 @@ export function wrapperJobFromDict(data: Record<string, unknown>): WrapperJob {
       failed: (p.failed || 0) as number,
     };
   }
+  let urlStatuses: UrlStatus[] | undefined;
+  if (Array.isArray(data.url_statuses)) {
+    urlStatuses = (data.url_statuses as Array<Record<string, unknown>>).map(s => ({
+      index: (s.index || 0) as number,
+      url: (s.url || '') as string,
+      status: (s.status || 'pending') as string,
+      durationMs: (s.duration_ms ?? null) as number | null,
+      error: (s.error ?? null) as string | null,
+    }));
+  }
   return {
     jobId: (data.job_id || '') as string,
     status: (data.status || 'pending') as string,
     progress,
     progressPercent: (data.progress_percent || 0) as number,
     urlsCount: (data.urls_count || 0) as number,
+    urlStatuses,
+    downloadUrl: data.download_url as string | undefined,
     error: data.error as string | undefined,
     createdAt: data.created_at as string | undefined,
     startedAt: data.started_at as string | undefined,

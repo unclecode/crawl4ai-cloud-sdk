@@ -40,6 +40,7 @@ export type {
   ScanJobStatus,
   WrapperJob,
   WrapperJobProgress,
+  UrlStatus,
   MarkdownOptions,
   MarkdownManyOptions,
   ScreenshotOptions,

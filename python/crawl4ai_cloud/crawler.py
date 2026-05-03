@@ -21,6 +21,7 @@ from .models import (
     MapResponse,
     SiteCrawlResponse,
     WrapperJob,
+    UrlStatus,
     ScanResult,
 )
 from .configs import (
@@ -1468,9 +1469,13 @@ class AsyncWebCrawler:
             poll_interval, timeout, webhook_url, priority: Async controls.
 
         Returns:
-            :class:`WrapperJob`. Poll the job's ``results[]`` for inline per-URL
-            extraction records (sync-shaped: ``{url, success, data, method_used,
-            schema_used, query_used, duration_ms, error_message}``).
+            :class:`WrapperJob`. With ``wait=True`` the SDK auto-hydrates
+            ``job.results`` from the per-URL endpoint after the parent
+            terminalizes — each entry is a :class:`CrawlResult` with
+            ``extracted_content`` populated (for AUTO/schema/llm methods).
+            With ``wait=False`` you get the parent immediately; poll
+            :meth:`get_extract_job` for ``url_statuses`` and call
+            :meth:`get_per_url_result` per URL when you want the data.
         """
         body: Dict[str, Any] = {"url": url, "method": method, "strategy": strategy}
         if extra_urls:
@@ -1753,14 +1758,76 @@ class AsyncWebCrawler:
     async def _wait_wrapper_job(
         self, job_id: str, job_type: str, poll_interval: float = 2.0, timeout: Optional[float] = None,
     ) -> WrapperJob:
+        """Poll until terminal, then hydrate ``job.results`` from per-URL S3.
+
+        The cloud GET endpoint returns ``url_statuses[]`` for fan-out parents
+        but never inlines per-URL data — that lives in S3 and is fetched
+        separately. ``wait=True`` callers expect ``job.results`` populated, so
+        we do the hydration here. Failed URLs become :class:`CrawlResult`
+        stubs (``success=False`` + ``error_message``) so ``len(job.results)``
+        always equals ``url_statuses_count``.
+        """
         start = time.time()
         while True:
             job = await self._get_wrapper_job(job_id, job_type)
             if job.is_complete:
+                if job.url_statuses:
+                    job.results = await self._hydrate_results(job)
                 return job
             if timeout and (time.time() - start) > timeout:
                 raise TimeoutError(f"Job {job_id} did not complete within {timeout}s")
             await asyncio.sleep(poll_interval)
+
+    async def _hydrate_results(self, job: WrapperJob) -> List[CrawlResult]:
+        """Fetch each URL's CrawlResult in parallel via the recipe-agnostic
+        per-URL endpoint. Failed URLs get a stub so the array stays aligned
+        with ``url_statuses``.
+        """
+        if not job.url_statuses:
+            return []
+
+        async def _fetch(entry: UrlStatus) -> CrawlResult:
+            if entry.status == "failed":
+                return CrawlResult(
+                    url=entry.url,
+                    success=False,
+                    error_message=entry.error or "URL failed",
+                    duration_ms=entry.duration_ms or 0,
+                )
+            try:
+                return await self.get_per_url_result(job.job_id, entry.index)
+            except Exception as e:
+                return CrawlResult(
+                    url=entry.url,
+                    success=False,
+                    error_message=f"per-URL fetch failed: {e}",
+                    duration_ms=entry.duration_ms or 0,
+                )
+
+        return await asyncio.gather(*(_fetch(e) for e in job.url_statuses))
+
+    async def get_per_url_result(self, job_id: str, url_index: int) -> CrawlResult:
+        """Fetch one URL's full result from a multi-URL fan-out parent.
+
+        Recipe-agnostic — works for any wrapper async parent (scrape /
+        screenshot / extract / crawl). Children all write to a unified S3
+        prefix keyed on ``(job_id, url_index)``, so the path is the same
+        regardless of which wrapper created the parent.
+
+        Args:
+            job_id: Parent job ID (from any ``*_many`` / ``*_async`` call).
+            url_index: 0-based index into the parent's submitted URL list.
+                Match this against entries in ``job.url_statuses``.
+
+        Returns:
+            :class:`CrawlResult`. ``markdown`` is populated for scrape jobs,
+            ``screenshot`` (base64) for screenshot jobs, ``extracted_content``
+            for extract jobs.
+        """
+        data = await self._http.request(
+            "GET", f"/v1/crawl/jobs/{job_id}/result/{url_index}"
+        )
+        return CrawlResult.from_dict(data)
 
     # Public convenience delegates
     async def get_markdown_job(self, job_id: str) -> WrapperJob:

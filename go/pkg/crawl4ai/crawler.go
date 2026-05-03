@@ -650,8 +650,15 @@ func (c *AsyncWebCrawler) waitScanJobV2(jobID string, pollInterval, timeout time
 	}
 }
 
-// waitWrapperJob polls /v1/{type}/jobs/{id} until the async wrapper job finishes.
+// waitWrapperJob polls /v1/{type}/jobs/{id} until the async wrapper job
+// finishes, then auto-hydrates job.Results from the per-URL S3 endpoint.
 // jobType is one of "markdown" / "screenshot" / "extract".
+//
+// The cloud GET endpoint returns URLStatuses for fan-out parents but never
+// inlines per-URL data — that lives in S3 and is fetched separately. Wait=true
+// callers expect job.Results populated, so we hydrate here. Failed URLs become
+// CrawlResult stubs (Success=false + ErrorMessage) so len(Results) always
+// equals len(URLStatuses).
 func (c *AsyncWebCrawler) waitWrapperJob(jobID, jobType string, pollInterval, timeout time.Duration) (*WrapperJob, error) {
 	if pollInterval == 0 {
 		pollInterval = 2 * time.Second
@@ -672,6 +679,14 @@ func (c *AsyncWebCrawler) waitWrapperJob(jobID, jobType string, pollInterval, ti
 			return nil, err
 		}
 		if job.IsComplete() {
+			if len(job.URLStatuses) > 0 {
+				if hydrated, herr := c.hydrateResults(job); herr == nil {
+					job.Results = hydrated
+				}
+				// Hydration failure is non-fatal — the parent job already
+				// terminalized successfully; caller can still drive
+				// GetPerUrlResult themselves with URLStatuses.
+			}
 			return job, nil
 		}
 		if timeout > 0 && time.Since(start) > timeout {
@@ -682,6 +697,77 @@ func (c *AsyncWebCrawler) waitWrapperJob(jobID, jobType string, pollInterval, ti
 		}
 		time.Sleep(pollInterval)
 	}
+}
+
+// hydrateResults fetches each URL's CrawlResult in parallel via the
+// recipe-agnostic per-URL endpoint. Failed URLs get a stub so the slice
+// stays aligned with URLStatuses.
+func (c *AsyncWebCrawler) hydrateResults(job *WrapperJob) ([]CrawlResult, error) {
+	results := make([]CrawlResult, len(job.URLStatuses))
+	type fetchResult struct {
+		idx int
+		res CrawlResult
+	}
+	ch := make(chan fetchResult, len(job.URLStatuses))
+	for i, entry := range job.URLStatuses {
+		go func(i int, entry UrlStatus) {
+			if entry.Status == "failed" {
+				ms := 0
+				if entry.DurationMs != nil {
+					ms = *entry.DurationMs
+				}
+				errMsg := entry.Error
+				if errMsg == "" {
+					errMsg = "URL failed"
+				}
+				ch <- fetchResult{idx: i, res: CrawlResult{
+					URL: entry.URL, Success: false, ErrorMessage: errMsg, DurationMs: ms,
+				}}
+				return
+			}
+			r, err := c.GetPerUrlResult(job.JobID, entry.Index)
+			if err != nil {
+				ms := 0
+				if entry.DurationMs != nil {
+					ms = *entry.DurationMs
+				}
+				ch <- fetchResult{idx: i, res: CrawlResult{
+					URL: entry.URL, Success: false,
+					ErrorMessage: fmt.Sprintf("per-URL fetch failed: %v", err),
+					DurationMs:   ms,
+				}}
+				return
+			}
+			ch <- fetchResult{idx: i, res: *r}
+		}(i, entry)
+	}
+	for range job.URLStatuses {
+		fr := <-ch
+		results[fr.idx] = fr.res
+	}
+	return results, nil
+}
+
+// GetPerUrlResult fetches one URL's full result from a multi-URL fan-out
+// parent. Recipe-agnostic — works for any wrapper async parent (scrape /
+// screenshot / extract / crawl). Children all write to a unified S3 prefix
+// keyed on (jobID, urlIndex), so the path is the same regardless of which
+// wrapper created the parent.
+//
+// urlIndex is the 0-based index into the parent's submitted URL list; match
+// against entries in job.URLStatuses.
+//
+// Returns CrawlResult. Markdown is populated for scrape jobs, Screenshot
+// (base64) for screenshot jobs, ExtractedContent for extract jobs.
+func (c *AsyncWebCrawler) GetPerUrlResult(jobID string, urlIndex int) (*CrawlResult, error) {
+	data, err := c.http.Get(fmt.Sprintf("/v1/crawl/jobs/%s/result/%d", jobID, urlIndex), nil)
+	if err != nil {
+		return nil, err
+	}
+	// CrawlResultFromMap handles the string-or-object polymorphism on the
+	// `markdown` field (sync returns a struct, async returns a raw string).
+	// Plain json.Unmarshal would choke on the string form.
+	return CrawlResultFromMap(data), nil
 }
 
 // ScreenshotAsync submits an async screenshot job over a list of URLs.

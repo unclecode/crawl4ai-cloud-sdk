@@ -1263,12 +1263,67 @@ export class AsyncWebCrawler {
     const start = Date.now();
     while (true) {
       const job = await this.getWrapperJob(jobId, jobType);
-      if (isWrapperJobComplete(job)) return job;
+      if (isWrapperJobComplete(job)) {
+        // The cloud GET endpoint returns urlStatuses[] for fan-out parents
+        // but never inlines per-URL data — that lives in S3 and is fetched
+        // separately. wait=true callers expect job.results populated, so we
+        // hydrate here. Failed URLs become CrawlResult stubs (success=false
+        // + errorMessage) so results.length always equals urlStatuses.length.
+        if (job.urlStatuses && job.urlStatuses.length > 0) {
+          job.results = await this.hydrateResults(job);
+        }
+        return job;
+      }
       if (timeout && (Date.now() - start) > timeout * 1000) {
         throw new TimeoutError(`Job ${jobId} did not complete within ${timeout}s`);
       }
       await this.sleep(pollInterval * 1000);
     }
+  }
+
+  private async hydrateResults(job: WrapperJob): Promise<CrawlResult[]> {
+    if (!job.urlStatuses) return [];
+    const fetches = job.urlStatuses.map(async (entry): Promise<CrawlResult> => {
+      if (entry.status === 'failed') {
+        return {
+          url: entry.url,
+          success: false,
+          errorMessage: entry.error || 'URL failed',
+          durationMs: entry.durationMs || 0,
+        } as CrawlResult;
+      }
+      try {
+        return await this.getPerUrlResult(job.jobId, entry.index);
+      } catch (e) {
+        return {
+          url: entry.url,
+          success: false,
+          errorMessage: `per-URL fetch failed: ${(e as Error).message}`,
+          durationMs: entry.durationMs || 0,
+        } as CrawlResult;
+      }
+    });
+    return Promise.all(fetches);
+  }
+
+  /**
+   * Fetch one URL's full result from a multi-URL fan-out parent.
+   *
+   * Recipe-agnostic — works for any wrapper async parent (scrape /
+   * screenshot / extract / crawl). Children all write to a unified S3
+   * prefix keyed on (jobId, urlIndex), so the path is the same regardless
+   * of which wrapper created the parent.
+   *
+   * @param jobId Parent job ID (from any *Many / *Async call).
+   * @param urlIndex 0-based index into the parent's submitted URL list.
+   *                 Match this against entries in `job.urlStatuses`.
+   * @returns CrawlResult. `markdown` is populated for scrape jobs,
+   *          `screenshot` (base64) for screenshot jobs, `extractedContent`
+   *          for extract jobs.
+   */
+  async getPerUrlResult(jobId: string, urlIndex: number): Promise<CrawlResult> {
+    const data = await this.http.get(`/v1/crawl/jobs/${jobId}/result/${urlIndex}`);
+    return crawlResultFromDict(data as Record<string, unknown>);
   }
 
   private async getWrapperJob(jobId: string, jobType: string): Promise<WrapperJob> {

@@ -1266,13 +1266,35 @@ func (p *WrapperJobProgress) Percent() int {
 	return int(float64(p.Completed+p.Failed) / float64(p.Total) * 100)
 }
 
+// UrlStatus is a per-URL status snapshot from a multi-URL fan-out parent.
+//
+// Returned in submission order under WrapperJob.URLStatuses. Status is one
+// of "pending" / "done" / "failed". For terminal entries DurationMs is set;
+// for failures, Error carries the upstream message.
+type UrlStatus struct {
+	Index      int    `json:"index"`
+	URL        string `json:"url"`
+	Status     string `json:"status"`
+	DurationMs *int   `json:"duration_ms,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
 // WrapperJob represents job status for wrapper async endpoints.
+//
+// For multi-URL fan-out parents, URLStatuses carries per-URL state in
+// submission order. Results is populated by SDK helpers (e.g. Wait=true
+// calls GetPerUrlResult for each entry). The cloud GET endpoints do not
+// inline Results — fetch per-URL data lazily via GetPerUrlResult or the
+// ZIP download_url.
 type WrapperJob struct {
 	JobID           string              `json:"job_id"`
 	Status          string              `json:"status"`
 	Progress        *WrapperJobProgress `json:"progress,omitempty"`
 	ProgressPercent int                 `json:"progress_percent"`
 	URLsCount       int                 `json:"urls_count"`
+	URLStatuses     []UrlStatus         `json:"url_statuses,omitempty"`
+	Results         []CrawlResult       `json:"-"` // SDK-populated after wait=true; not returned by the API
+	DownloadURL     string              `json:"download_url,omitempty"`
 	Error           string              `json:"error,omitempty"`
 	CreatedAt       string              `json:"created_at,omitempty"`
 	StartedAt       string              `json:"started_at,omitempty"`

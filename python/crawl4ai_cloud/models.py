@@ -1409,13 +1409,50 @@ class WrapperJobProgress:
 
 
 @dataclass
+class UrlStatus:
+    """Per-URL status snapshot from a multi-URL fan-out parent.
+
+    Returned in submission order under ``WrapperJob.url_statuses``. Status is
+    one of ``pending`` / ``done`` / ``failed`` (`running` is reserved for a
+    future v2 polish). For terminal entries, ``duration_ms`` is set; for
+    failures, ``error`` carries the upstream message.
+    """
+    index: int
+    url: str
+    status: str
+    duration_ms: Optional[int] = None
+    error: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "UrlStatus":
+        return cls(
+            index=data.get("index", 0),
+            url=data.get("url", ""),
+            status=data.get("status", "pending"),
+            duration_ms=data.get("duration_ms"),
+            error=data.get("error"),
+        )
+
+
+@dataclass
 class WrapperJob:
-    """Job status for wrapper async endpoints (/v1/markdown/async, etc.)."""
+    """Job status for wrapper async endpoints (/v1/scrape/async, etc.).
+
+    For multi-URL fan-out parents, ``url_statuses`` carries per-URL state in
+    submission order. ``results`` is populated by SDK helpers that hydrate
+    after a job terminalizes (e.g. ``wait=True`` calls ``get_per_url_result``
+    for each entry). The cloud GET endpoints do not inline ``results`` —
+    fetch per-URL data lazily via :meth:`AsyncWebCrawler.get_per_url_result`
+    or download the ZIP via ``download_url``.
+    """
     job_id: str
     status: str = "pending"
     progress: Optional[WrapperJobProgress] = None
     progress_percent: int = 0
     urls_count: int = 0
+    url_statuses: Optional[List[UrlStatus]] = None
+    results: Optional[List["CrawlResult"]] = None
+    download_url: Optional[str] = None
     error: Optional[str] = None
     created_at: Optional[str] = None
     started_at: Optional[str] = None
@@ -1434,12 +1471,18 @@ class WrapperJob:
         progress = None
         if data.get("progress"):
             progress = WrapperJobProgress.from_dict(data["progress"])
+        url_statuses = None
+        raw_statuses = data.get("url_statuses")
+        if isinstance(raw_statuses, list):
+            url_statuses = [UrlStatus.from_dict(s) for s in raw_statuses]
         return cls(
             job_id=data.get("job_id", ""),
             status=data.get("status", "pending"),
             progress=progress,
             progress_percent=data.get("progress_percent", 0),
             urls_count=data.get("urls_count", 0),
+            url_statuses=url_statuses,
+            download_url=data.get("download_url"),
             error=data.get("error"),
             created_at=data.get("created_at"),
             started_at=data.get("started_at"),

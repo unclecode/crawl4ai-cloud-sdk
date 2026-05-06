@@ -109,6 +109,28 @@ export interface RunManyOptions extends RunOptions {
   webhookUrl?: string;
 }
 
+export interface SiteOptions {
+  /** 'map' = sync sitemap discovery, 'traverse' = async recursive crawl across the worker pool. Default: 'traverse'. */
+  mode?: 'map' | 'traverse';
+  maxUrls?: number;
+  maxDepth?: number;
+  scanOnly?: boolean;
+  patterns?: string[];
+  filters?: Record<string, unknown>;
+  scorers?: Record<string, unknown>;
+  query?: string;
+  scoreThreshold?: number;
+  includeSubdomains?: boolean;
+  crawlerConfig?: CrawlerRunConfig | Record<string, unknown>;
+  browserConfig?: BrowserConfig | Record<string, unknown>;
+  proxy?: string | ProxyConfig | Record<string, unknown>;
+  webhookUrl?: string;
+  priority?: number;
+  wait?: boolean;
+  pollInterval?: number;
+  timeout?: number;
+}
+
 export interface DeepCrawlOptions {
   sourceJob?: string;
   strategy?: 'bfs' | 'dfs' | 'best_first' | 'map';
@@ -450,24 +472,119 @@ export class AsyncWebCrawler {
   }
 
   // -------------------------------------------------------------------------
-  // Deep Crawl
+  // Site (canonical) + Deep Crawl (back-compat alias)
   // -------------------------------------------------------------------------
 
   /**
-   * Deep crawl - discover and crawl URLs from a starting point.
+   * Discover or crawl an entire site (canonical, /v1/site).
+   *
+   * `mode='map'` runs sync sitemap-based URL discovery. `mode='traverse'`
+   * (default) returns a `jobId` immediately and runs best-first recursive
+   * crawl across the worker pool via the cloud's WorkerPoolDispatcher.
    */
+  async site(url: string, options: SiteOptions = {}): Promise<DeepCrawlResult> {
+    const {
+      mode = 'traverse',
+      maxUrls,
+      maxDepth,
+      scanOnly = false,
+      patterns,
+      filters,
+      scorers,
+      query,
+      scoreThreshold,
+      includeSubdomains = false,
+      crawlerConfig,
+      browserConfig,
+      proxy,
+      webhookUrl,
+      priority = 5,
+      wait = false,
+      pollInterval = 2.0,
+      timeout,
+    } = options;
+
+    const body: Record<string, unknown> = {
+      url,
+      mode,
+      scan_only: scanOnly,
+      include_subdomains: includeSubdomains,
+      priority,
+    };
+    if (maxUrls !== undefined) body.max_urls = maxUrls;
+    if (maxDepth !== undefined) body.max_depth = maxDepth;
+    if (patterns) body.patterns = patterns;
+    if (filters) body.filters = filters;
+    if (scorers) body.scorers = scorers;
+    if (query) body.query = query;
+    if (scoreThreshold !== undefined) body.score_threshold = scoreThreshold;
+    if (crawlerConfig) {
+      const cc = sanitizeCrawlerConfig(crawlerConfig as CrawlerRunConfig);
+      if (Object.keys(cc).length > 0) body.crawler_config = cc;
+    }
+    if (browserConfig) {
+      const bc = sanitizeBrowserConfig(browserConfig as BrowserConfig);
+      if (Object.keys(bc).length > 0) body.browser_config = bc;
+    }
+    const proxyConfig = normalizeProxy(proxy);
+    if (proxyConfig) body.proxy = proxyConfig;
+    if (webhookUrl) body.webhook_url = webhookUrl;
+
+    const data = await this.http.post('/v1/site', body, 120000);
+    let result = deepCrawlResultFromDict(data);
+
+    if (!wait || result.status === 'completed' || result.status === 'cancelled' || result.status === 'failed') {
+      return result;
+    }
+
+    // Traverse mode — wait for scan, then crawl phase if any
+    result = await this.waitSiteJob(result.jobId, pollInterval, timeout);
+    if (scanOnly || !result.crawlJobId) return result;
+    return await this.waitJob(result.crawlJobId, { pollInterval, timeout }) as unknown as DeepCrawlResult;
+  }
+
+  private async waitSiteJob(
+    jobId: string,
+    pollInterval: number = 2.0,
+    timeout?: number,
+  ): Promise<DeepCrawlResult> {
+    const start = Date.now();
+    while (true) {
+      const data = await this.http.get(`/v1/site/jobs/${jobId}`);
+      const result = deepCrawlResultFromDict(data);
+      if (['completed', 'cancelled', 'failed'].includes(result.status)) return result;
+      if (timeout && (Date.now() - start) / 1000 > timeout) {
+        throw new Error(
+          `Timeout waiting for site job ${jobId}. Status: ${result.status}, Discovered: ${result.discoveredCount}`
+        );
+      }
+      await new Promise(r => setTimeout(r, pollInterval * 1000));
+    }
+  }
+
+  /** Cancel a running site (traverse) job. */
+  async cancelSite(jobId: string): Promise<DeepCrawlResult> {
+    const data = await this.http.post(`/v1/site/jobs/${jobId}/cancel`, {});
+    return deepCrawlResultFromDict(data);
+  }
+
+  /** Get the status of a site (traverse) job. */
+  async getSiteStatus(jobId: string): Promise<DeepCrawlResult> {
+    const data = await this.http.get(`/v1/site/jobs/${jobId}`);
+    return deepCrawlResultFromDict(data);
+  }
+
   /**
-   * @deprecated Targets the deprecated `/v1/crawl/deep` endpoint. Migrate to
-   * `crawler.scan({ scan: { mode: 'deep' } })` for URL discovery, then pipe to
-   * `scrapeMany()` / `extractMany()`. Will be removed in 0.8.0.
+   * Deep crawl - discover and crawl URLs from a starting point.
+   *
+   * `/v1/crawl/deep` is now a server-side alias for `/v1/site` (Phase 4).
+   * `crawler.deepCrawl()` is kept as a back-compat alias — no warning.
+   * New code should call `crawler.site()` directly.
    */
   async deepCrawl(
     url?: string,
     options: DeepCrawlOptions = {}
   ): Promise<DeepCrawlResult | CrawlJob> {
-    if (typeof process !== 'undefined' && process.emitWarning) {
-      process.emitWarning('crawler.deepCrawl() targets the deprecated /v1/crawl/deep endpoint. Migrate to scan() + scrapeMany()/extractMany().', 'DeprecationWarning');
-    }
     const {
       sourceJob,
       strategy = 'bfs',
@@ -710,11 +827,18 @@ export class AsyncWebCrawler {
       timeout,
     } = options;
 
+    if (mode === 'deep') {
+      throw new Error(
+        "scan(mode='deep') is no longer supported — recursive URL discovery " +
+        "moved to crawler.site(url, { mode: 'traverse', scanOnly: true, ... }). " +
+        "For one-shot sitemap discovery, drop the mode option and call scan(url) directly."
+      );
+    }
     if (mode !== undefined) {
       if (typeof process !== 'undefined' && process.emitWarning) {
-        process.emitWarning('scan(mode) is deprecated — use sources ("primary" | "extended").', 'DeprecationWarning');
+        process.emitWarning('scan(mode) is deprecated — use sources ("primary" | "extended"). Will be removed in 0.10.0.', 'DeprecationWarning');
       }
-      sources = mode === 'deep' ? 'extended' : 'primary';
+      sources = 'primary';
     }
 
     const body: Record<string, unknown> = {
@@ -1153,77 +1277,20 @@ export class AsyncWebCrawler {
    * ```
    */
   /**
-   * @deprecated Targets the deprecated `/v1/crawl/site` endpoint. Migrate to
-   * `crawler.scan({ criteria })` for URL discovery, then pipe to
-   * `extractMany({ url: first, extraUrls: rest })` for structured fields or
-   * `scrapeMany({ urls })` for markdown. Will be removed in 0.8.0.
+   * /v1/crawl/site was removed (zero traffic for 14 days, deletion approved
+   * 2026-05). Refuse client-side rather than 404 on the wire.
+   *
+   * For recursive site crawling, use `crawler.site(url, { mode: 'traverse' })`.
+   * For AI-assisted discovery + extraction, pipeline `crawler.scan({ criteria })`
+   * → `crawler.extractMany(first, { extraUrls: rest, ... })`.
    */
-  async crawlSite(url: string, options: SiteCrawlOptions = {}): Promise<SiteCrawlResponse> {
-    if (typeof process !== 'undefined' && process.emitWarning) {
-      process.emitWarning('crawler.crawlSite() targets the deprecated /v1/crawl/site endpoint. Migrate to scan() + extractMany()/scrapeMany().', 'DeprecationWarning');
-    }
-    const {
-      maxPages = 20,
-      discovery = 'map',
-      strategy = 'browser',
-      fit = true,
-      include,
-      pattern,
-      maxDepth,
-      crawlerConfig,
-      browserConfig,
-      proxy,
-      webhookUrl,
-      priority = 5,
-      criteria,
-      scan,
-      extract,
-      includeMarkdown,
-      wait = false,
-      pollInterval = 5.0,
-      timeout,
-    } = options;
-
-    const body: Record<string, unknown> = {
-      url,
-      max_pages: maxPages,
-      strategy,
-      fit,
-      priority,
-    };
-
-    // AI-assisted fields
-    if (criteria) body.criteria = criteria;
-    if (scan !== undefined) {
-      body.scan = this.isSiteScanConfig(scan) ? siteScanConfigToDict(scan) : scan;
-    }
-    if (extract !== undefined) {
-      body.extract = this.isSiteExtractConfig(extract) ? siteExtractConfigToDict(extract) : extract;
-    }
-    if (include !== undefined) body.include = include;
-    if (includeMarkdown !== undefined) body.include_markdown = includeMarkdown;
-
-    // Legacy / backward-compat fields
-    if (discovery !== 'map') body.discovery = discovery;
-    if (pattern) body.pattern = pattern;
-    if (maxDepth !== undefined) body.max_depth = maxDepth;
-    if (crawlerConfig) body.crawler_config = crawlerConfig;
-    if (browserConfig) body.browser_config = browserConfig;
-    if (proxy) body.proxy = proxy;
-    if (webhookUrl) body.webhook_url = webhookUrl;
-
-    // Site crawl can stack LLM calls (scan config + schema gen) so give
-    // the initial POST a generous timeout.
-    const data = await this.http.post('/v1/crawl/site', body, 240000);
-    const result = siteCrawlResponseFromDict(data);
-
-    if (wait && result.jobId) {
-      const final = await this.waitSiteCrawlJob(result.jobId, pollInterval, timeout);
-      result.status = final.status;
-      result.discoveredUrls = final.progress.urlsDiscovered;
-    }
-
-    return result;
+  async crawlSite(_url: string, _options: SiteCrawlOptions = {}): Promise<SiteCrawlResponse> {
+    throw new Error(
+      "crawler.crawlSite() — the /v1/crawl/site endpoint was removed. " +
+      "For recursive site crawling, use crawler.site(url, { mode: 'traverse', maxUrls }). " +
+      "For AI-assisted discovery + extraction, pipeline crawler.scan({ criteria }) → " +
+      "crawler.extractMany(first, { extraUrls: rest })."
+    );
   }
 
   /**

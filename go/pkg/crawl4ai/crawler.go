@@ -252,6 +252,150 @@ func (c *AsyncWebCrawler) CancelJob(jobID string) error {
 	return err
 }
 
+// SiteOptions are options for Site (the canonical /v1/site endpoint).
+type SiteOptions struct {
+	Mode              string // "map" (sync sitemap discovery) | "traverse" (async, default)
+	MaxURLs           int
+	MaxDepth          int
+	ScanOnly          bool
+	Patterns          []string
+	Filters           map[string]interface{}
+	Scorers           map[string]interface{}
+	Query             string
+	ScoreThreshold    *float64
+	IncludeSubdomains bool
+	CrawlerConfig     *CrawlerRunConfig
+	BrowserConfig     *BrowserConfig
+	Proxy             interface{}
+	WebhookURL        string
+	Priority          int
+	Wait              bool
+	PollInterval      time.Duration
+	Timeout           time.Duration
+}
+
+// Site discovers or crawls an entire site (canonical, /v1/site).
+//
+// Mode "map" runs sync sitemap-based URL discovery. Mode "traverse" (default)
+// returns a job_id immediately and runs best-first recursive crawl across the
+// worker pool via the cloud's WorkerPoolDispatcher.
+func (c *AsyncWebCrawler) Site(url string, opts *SiteOptions) (*DeepCrawlResult, error) {
+	if opts == nil {
+		opts = &SiteOptions{}
+	}
+	mode := opts.Mode
+	if mode == "" {
+		mode = "traverse"
+	}
+	priority := opts.Priority
+	if priority == 0 {
+		priority = 5
+	}
+
+	body := map[string]interface{}{
+		"url":                url,
+		"mode":               mode,
+		"scan_only":          opts.ScanOnly,
+		"include_subdomains": opts.IncludeSubdomains,
+		"priority":           priority,
+	}
+	if opts.MaxURLs > 0 {
+		body["max_urls"] = opts.MaxURLs
+	}
+	if opts.MaxDepth > 0 {
+		body["max_depth"] = opts.MaxDepth
+	}
+	if len(opts.Patterns) > 0 {
+		body["patterns"] = opts.Patterns
+	}
+	if opts.Filters != nil {
+		body["filters"] = opts.Filters
+	}
+	if opts.Scorers != nil {
+		body["scorers"] = opts.Scorers
+	}
+	if opts.Query != "" {
+		body["query"] = opts.Query
+	}
+	if opts.ScoreThreshold != nil {
+		body["score_threshold"] = *opts.ScoreThreshold
+	}
+	if opts.CrawlerConfig != nil {
+		if cc := SanitizeCrawlerConfig(opts.CrawlerConfig); len(cc) > 0 {
+			body["crawler_config"] = cc
+		}
+	}
+	if opts.BrowserConfig != nil {
+		if bc := SanitizeBrowserConfig(opts.BrowserConfig, ""); len(bc) > 0 {
+			body["browser_config"] = bc
+		}
+	}
+	if opts.Proxy != nil {
+		body["proxy"] = opts.Proxy
+	}
+	if opts.WebhookURL != "" {
+		body["webhook_url"] = opts.WebhookURL
+	}
+
+	data, err := c.http.Post("/v1/site", body, 120*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	result := DeepCrawlResultFromMap(data)
+
+	terminal := result.Status == "completed" || result.Status == "cancelled" || result.Status == "failed"
+	if !opts.Wait || terminal {
+		return result, nil
+	}
+
+	// Traverse mode — wait for scan to finish, then crawl phase if any
+	scan, err := c.waitSiteJob(result.JobID, opts.PollInterval, opts.Timeout)
+	if err != nil {
+		return result, err
+	}
+	return scan, nil
+}
+
+// waitSiteJob polls /v1/site/jobs/{id} until the scan completes.
+func (c *AsyncWebCrawler) waitSiteJob(jobID string, pollInterval, timeout time.Duration) (*DeepCrawlResult, error) {
+	if pollInterval == 0 {
+		pollInterval = 2 * time.Second
+	}
+	start := time.Now()
+	for {
+		data, err := c.http.Get(fmt.Sprintf("/v1/site/jobs/%s", jobID), nil)
+		if err != nil {
+			return nil, err
+		}
+		result := DeepCrawlResultFromMap(data)
+		if result.Status == "completed" || result.Status == "cancelled" || result.Status == "failed" {
+			return result, nil
+		}
+		if timeout > 0 && time.Since(start) > timeout {
+			return result, fmt.Errorf("timeout waiting for site job %s (status: %s)", jobID, result.Status)
+		}
+		time.Sleep(pollInterval)
+	}
+}
+
+// CancelSite cancels a running site (traverse) job.
+func (c *AsyncWebCrawler) CancelSite(jobID string) (*DeepCrawlResult, error) {
+	data, err := c.http.Post(fmt.Sprintf("/v1/site/jobs/%s/cancel", jobID), nil, 0)
+	if err != nil {
+		return nil, err
+	}
+	return DeepCrawlResultFromMap(data), nil
+}
+
+// GetSiteStatus returns the status of a site (traverse) job.
+func (c *AsyncWebCrawler) GetSiteStatus(jobID string) (*DeepCrawlResult, error) {
+	data, err := c.http.Get(fmt.Sprintf("/v1/site/jobs/%s", jobID), nil)
+	if err != nil {
+		return nil, err
+	}
+	return DeepCrawlResultFromMap(data), nil
+}
+
 // DeepCrawlOptions are options for DeepCrawl.
 type DeepCrawlOptions struct {
 	SourceJob     string
@@ -290,9 +434,9 @@ type DeepCrawlResultWrapper struct {
 
 // DeepCrawl performs a deep crawl starting from a URL.
 //
-// Deprecated: targets the deprecated /v1/crawl/deep endpoint. Migrate to
-// Scan() with ScanOptions{Scan: &SiteScanConfig{Mode: "deep"}} for URL discovery,
-// then pipe the results to ScrapeAsync()/ExtractAsync(). Will be removed in 0.8.0.
+// /v1/crawl/deep is now a server-side alias for /v1/site (Phase 4).
+// DeepCrawl() is kept as a back-compat alias — no warning.
+// New code should call Site() directly.
 func (c *AsyncWebCrawler) DeepCrawl(url string, opts *DeepCrawlOptions) (*DeepCrawlResultWrapper, error) {
 	if opts == nil {
 		opts = &DeepCrawlOptions{}
@@ -531,15 +675,17 @@ func (c *AsyncWebCrawler) Scan(url string, opts *ScanOptions) (*ScanResult, erro
 		"url": url,
 	}
 	if opts != nil {
-		// Sources (canonical) — falls back to legacy Mode for back-compat.
-		sources := opts.Sources
-		if sources == "" && opts.Mode != "" {
-			if opts.Mode == "deep" {
-				sources = "extended"
-			} else {
-				sources = "primary"
-			}
+		// mode='deep' was the recursive-scan path that has moved to /v1/site.
+		// Hard guard: refuse client-side rather than 422 on the wire.
+		if opts.Mode == "deep" {
+			return nil, fmt.Errorf(
+				"Scan(mode=\"deep\") is no longer supported — recursive URL " +
+					"discovery moved to Site(url, &SiteOptions{Mode: \"traverse\", ScanOnly: true, ...}). " +
+					"For one-shot sitemap discovery, leave Mode empty and call Scan(url, ...) directly.",
+			)
 		}
+		// Sources (canonical) — Mode (other than 'deep') maps to 'primary' for back-compat.
+		sources := opts.Sources
 		if sources == "" {
 			sources = "primary"
 		}
@@ -1289,101 +1435,22 @@ func (c *AsyncWebCrawler) Map(url string, opts *MapOptions) (*MapResponse, error
 	return unmarshalWrapper[MapResponse](data)
 }
 
-// CrawlSite crawls an entire website. Always async.
+// CrawlSite is no longer supported.
 //
-// Deprecated: targets the deprecated /v1/crawl/site endpoint. Migrate to
-// Scan() with ScanOptions{Criteria: ...} for URL discovery, then pipe results
-// to ExtractAsync(url, &ExtractAsyncOptions{ExtraURLs: ...}) for structured
-// fields or ScrapeAsync(urls, ...) for markdown. Will be removed in 0.8.0.
-func (c *AsyncWebCrawler) CrawlSite(url string, opts *SiteCrawlOptions) (*SiteCrawlResponse, error) {
-	if opts == nil {
-		opts = &SiteCrawlOptions{}
-	}
-	maxPages := opts.MaxPages
-	if maxPages == 0 {
-		maxPages = 20
-	}
-	strategy := opts.Strategy
-	if strategy == "" {
-		strategy = "browser"
-	}
-	fit := true
-	if opts.Fit != nil {
-		fit = *opts.Fit
-	}
-	priority := opts.Priority
-	if priority == 0 {
-		priority = 5
-	}
-
-	body := map[string]interface{}{
-		"url": url, "max_pages": maxPages,
-		"strategy": strategy, "fit": fit, "priority": priority,
-	}
-
-	// --- AI-assisted fields (new) ---
-	if opts.Criteria != "" {
-		body["criteria"] = opts.Criteria
-	}
-	if opts.Scan != nil {
-		body["scan"] = opts.Scan.ToMap()
-	}
-	if opts.Extract != nil {
-		body["extract"] = opts.Extract.ToMap()
-	}
-	if opts.IncludeMarkdown != nil {
-		body["include_markdown"] = *opts.IncludeMarkdown
-	}
-
-	// --- Legacy / backward-compat fields ---
-	if opts.Discovery != "" && opts.Discovery != "map" {
-		body["discovery"] = opts.Discovery
-	}
-	if len(opts.Include) > 0 {
-		body["include"] = opts.Include
-	}
-	if opts.Pattern != "" {
-		body["pattern"] = opts.Pattern
-	}
-	if opts.MaxDepth != nil {
-		body["max_depth"] = *opts.MaxDepth
-	}
-	if opts.CrawlerConfig != nil {
-		body["crawler_config"] = opts.CrawlerConfig
-	}
-	if opts.BrowserConfig != nil {
-		body["browser_config"] = opts.BrowserConfig
-	}
-	if opts.Proxy != nil {
-		body["proxy"] = opts.Proxy
-	}
-	if opts.WebhookURL != "" {
-		body["webhook_url"] = opts.WebhookURL
-	}
-
-	// Longer timeout — extract triggers schema gen (sample fetch + LLM call)
-	// which can take 30-120s before the job is even created.
-	data, err := c.http.Post("/v1/crawl/site", body, 240*time.Second)
-	if err != nil {
-		return nil, err
-	}
-	result, err := unmarshalWrapper[SiteCrawlResponse](data)
-	if err != nil {
-		return nil, err
-	}
-
-	if opts.Wait && result.JobID != "" {
-		final, err := c.waitSiteCrawlJob(result.JobID, opts.PollInterval, opts.Timeout)
-		if err != nil {
-			return result, err
-		}
-		// Transfer polled state back onto the response
-		result.Status = final.Status
-		result.DiscoveredURLs = final.Progress.UrlsDiscovered
-	}
-
-	return result, nil
+// /v1/crawl/site was removed (zero traffic for 14 days, deletion approved
+// 2026-05). Returns an error pointing at the canonical alternatives:
+//   - Site(url, &SiteOptions{Mode: "traverse", MaxURLs: ...}) for recursive crawling
+//   - Scan(url, &ScanOptions{Criteria: ...}) → ExtractAsync(first, &ExtractAsyncOptions{ExtraURLs: rest})
+//     for AI-assisted discovery + extraction
+func (c *AsyncWebCrawler) CrawlSite(_ string, _ *SiteCrawlOptions) (*SiteCrawlResponse, error) {
+	return nil, fmt.Errorf(
+		"CrawlSite() — the /v1/crawl/site endpoint was removed. " +
+			"For recursive site crawling, use Site(url, &SiteOptions{Mode: \"traverse\", MaxURLs: N}). " +
+			"For AI-assisted discovery + extraction, pipeline Scan(url, &ScanOptions{Criteria: ...}) → " +
+			"ExtractAsync(first, &ExtractAsyncOptions{ExtraURLs: rest}).",
+	)
 }
+
 
 // GetSiteCrawlJob polls a site crawl job started via CrawlSite(). This is the
 // unified polling endpoint — it merges the scan phase (URL discovery) and the

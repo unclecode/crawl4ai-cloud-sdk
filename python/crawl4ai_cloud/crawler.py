@@ -475,6 +475,134 @@ class AsyncWebCrawler:
     # Deep Crawl
     # -------------------------------------------------------------------------
 
+    async def site(
+        self,
+        url: str,
+        mode: str = "traverse",
+        max_urls: Optional[int] = None,
+        max_depth: Optional[int] = None,
+        scan_only: bool = False,
+        patterns: Optional[List[str]] = None,
+        filters: Optional[Dict[str, Any]] = None,
+        scorers: Optional[Dict[str, Any]] = None,
+        query: Optional[str] = None,
+        score_threshold: Optional[float] = None,
+        include_subdomains: bool = False,
+        crawler_config: Optional[Union[CrawlerRunConfig, Dict[str, Any]]] = None,
+        browser_config: Optional[Union[BrowserConfig, Dict[str, Any]]] = None,
+        proxy: Optional[Union[str, Dict[str, Any], ProxyConfig]] = None,
+        webhook_url: Optional[str] = None,
+        priority: int = 5,
+        wait: bool = False,
+        poll_interval: float = 2.0,
+        timeout: Optional[float] = None,
+    ) -> DeepCrawlResult:
+        """Discover or crawl an entire site (canonical, /v1/site).
+
+        ``mode='map'`` runs sync sitemap-based URL discovery. ``mode='traverse'``
+        (default) returns a job_id immediately and runs best-first recursive
+        crawl across the worker pool via the cloud's WorkerPoolDispatcher.
+
+        Args:
+            url: Starting URL.
+            mode: ``'map'`` (sync) or ``'traverse'`` (async, default).
+            max_urls: Cap on URLs discovered/crawled.
+            max_depth: Max traversal depth (1-10, traverse mode only).
+            scan_only: Return discovered URLs only — skip content fetch.
+            patterns: URL glob patterns (e.g. ``["*/docs/*"]``).
+            filters: Filter config — ``{patterns, domains: {allowed, blocked}}``.
+            scorers: Scorer config (traverse only) — keywords + weights.
+            query: BM25 relevance query (map mode).
+            score_threshold: Minimum relevance score (requires ``query``).
+            include_subdomains: Discover URLs across subdomains too.
+            crawler_config: CrawlerRunConfig overrides.
+            browser_config: BrowserConfig overrides.
+            proxy: Proxy configuration.
+            webhook_url: Callback when the job terminates.
+            priority: Job priority (1, 5, or 10).
+            wait: If True, poll until the job completes.
+            poll_interval: Poll interval in seconds (when wait=True).
+            timeout: Max wait time in seconds (when wait=True).
+
+        Returns:
+            :class:`DeepCrawlResult` (same shape as :meth:`deep_crawl`).
+        """
+        body: Dict[str, Any] = {
+            "url": url,
+            "mode": mode,
+            "scan_only": scan_only,
+            "include_subdomains": include_subdomains,
+            "priority": priority,
+        }
+        if max_urls is not None:
+            body["max_urls"] = max_urls
+        if max_depth is not None:
+            body["max_depth"] = max_depth
+        if patterns:
+            body["patterns"] = patterns
+        if filters:
+            body["filters"] = filters
+        if scorers:
+            body["scorers"] = scorers
+        if query:
+            body["query"] = query
+        if score_threshold is not None:
+            body["score_threshold"] = score_threshold
+        if crawler_config is not None:
+            body["crawler_config"] = (
+                crawler_config.to_dict() if hasattr(crawler_config, "to_dict") else crawler_config
+            )
+        if browser_config is not None:
+            body["browser_config"] = (
+                browser_config.to_dict() if hasattr(browser_config, "to_dict") else browser_config
+            )
+        if proxy is not None:
+            body["proxy"] = normalize_proxy(proxy)
+        if webhook_url:
+            body["webhook_url"] = webhook_url
+
+        data = await self._http.request("POST", "/v1/site", json=body, timeout=120)
+        result = DeepCrawlResult.from_dict(data)
+
+        if not wait or result.is_complete:
+            return result
+
+        # Traverse mode — wait for scan to finish, then crawl phase if any
+        scan_result = await self._wait_site_job(result.job_id, poll_interval, timeout)
+        if scan_only or not scan_result.has_urls or not scan_result.crawl_job_id:
+            return scan_result
+        return await self.wait_job(scan_result.crawl_job_id, poll_interval, timeout)
+
+    async def _wait_site_job(
+        self,
+        job_id: str,
+        poll_interval: float = 2.0,
+        timeout: Optional[float] = None,
+    ) -> DeepCrawlResult:
+        """Poll /v1/site/jobs/{id} until the scan completes."""
+        start_time = time.time()
+        while True:
+            data = await self._http.request("GET", f"/v1/site/jobs/{job_id}")
+            result = DeepCrawlResult.from_dict(data)
+            if result.is_complete:
+                return result
+            if timeout and (time.time() - start_time) > timeout:
+                raise TimeoutError(
+                    f"Timeout waiting for site job {job_id}. "
+                    f"Status: {result.status}, Discovered: {result.discovered_count}"
+                )
+            await asyncio.sleep(poll_interval)
+
+    async def cancel_site(self, job_id: str) -> DeepCrawlResult:
+        """Cancel a running site (traverse) job."""
+        data = await self._http.request("POST", f"/v1/site/jobs/{job_id}/cancel")
+        return DeepCrawlResult.from_dict(data)
+
+    async def get_site_status(self, job_id: str) -> DeepCrawlResult:
+        """Get the status of a site (traverse) job."""
+        data = await self._http.request("GET", f"/v1/site/jobs/{job_id}")
+        return DeepCrawlResult.from_dict(data)
+
     async def deep_crawl(
         self,
         url: Optional[str] = None,
@@ -571,12 +699,9 @@ class AsyncWebCrawler:
         if url and source_job:
             raise ValueError("Provide either 'url' or 'source_job', not both")
 
-        warnings.warn(
-            "crawler.deep_crawl() targets the deprecated /v1/crawl/deep endpoint. "
-            "Migrate to crawler.scan(scan={'mode': 'deep'}) for URL discovery, "
-            "then pipe to scrape_many() / extract_many(). Will be removed in 0.8.0.",
-            DeprecationWarning, stacklevel=2,
-        )
+        # /v1/crawl/deep is now a server-side alias for /v1/site (Phase 4).
+        # crawler.deep_crawl() is kept as a back-compat alias — no warning.
+        # New code should call crawler.site() directly.
 
         # Build request body
         body: Dict[str, Any] = {}
@@ -833,14 +958,23 @@ class AsyncWebCrawler:
         """
         from crawl4ai_cloud.models import ScanResult, SiteScanConfig
 
-        # Legacy mode= → sources= translation. mode is deprecated.
+        # mode='deep' was the recursive-scan path that has moved to /v1/site.
+        # Hard guard: refuse client-side rather than 422 on the wire.
+        if mode == "deep":
+            raise ValueError(
+                "scan(mode='deep') is no longer supported — recursive URL "
+                "discovery moved to crawler.site(url, mode='traverse', "
+                "scan_only=True, ...). For one-shot sitemap discovery, drop "
+                "the mode kwarg and call scan(url) directly."
+            )
+        # Legacy mode= (any other value) → sources= translation, deprecated.
         if mode is not None:
             warnings.warn(
                 "scan(mode=…) is deprecated — use sources= ('primary' | 'extended'). "
-                "Will be removed in 0.8.0.",
+                "Will be removed in 0.10.0.",
                 DeprecationWarning, stacklevel=2,
             )
-            sources = "extended" if mode == "deep" else "primary"
+            sources = "primary"
 
         body: Dict[str, Any] = {"url": url, "sources": sources}
         if criteria:
@@ -1604,15 +1738,17 @@ class AsyncWebCrawler:
         """
         from crawl4ai_cloud.models import SiteScanConfig, SiteExtractConfig
 
-        warnings.warn(
-            "crawler.crawl_site() targets the deprecated /v1/crawl/site endpoint. "
-            "Migrate to crawler.scan(criteria=...) for URL discovery, then pipe to "
-            "crawler.extract_many(url=first, extra_urls=rest, ...) for structured "
-            "fields or crawler.scrape_many(urls=...) for markdown. "
-            "Will be removed in 0.8.0.",
-            DeprecationWarning, stacklevel=2,
+        # /v1/crawl/site was removed (zero traffic for 14 days, deletion
+        # approved 2026-05). Refuse client-side rather than 404 on the wire.
+        raise ValueError(
+            "crawler.crawl_site() — the /v1/crawl/site endpoint was removed. "
+            "For recursive site crawling, use crawler.site(url, mode='traverse', "
+            "max_urls=…). For AI-assisted discovery + extraction, pipeline "
+            "crawler.scan(criteria=…) → crawler.extract_many(url=first, "
+            "extra_urls=rest, …)."
         )
-
+        # Unreachable below — kept temporarily for shape reference; remove
+        # entirely in 0.10.0.
         body: Dict[str, Any] = {
             "url": url,
             "max_pages": max_pages,

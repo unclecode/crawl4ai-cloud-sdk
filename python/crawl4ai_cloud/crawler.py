@@ -2353,12 +2353,26 @@ class AsyncWebCrawler:
             **params: Per-vertical request fields. For ``service="search"``:
                 ``query`` (required), ``country``, ``language``, ``location``,
                 ``num``, ``start``, ``site``, ``mode``, ``time_period``,
-                ``bypass_cache``, plus the synth knobs:
+                ``backends`` (list[str], 1-4 names from ``google`` /
+                ``bing`` / ``duckduckgo`` / ``brave``; omit for the
+                server's default of ``["google"]``; >1 fans out + merges),
+                ``use_cache`` (bool, default False — opt into the SERP
+                cache; legacy ``bypass_cache`` still wins when True),
+                plus the synth knobs:
                 ``synthesize`` (bool), ``synth_mode`` (``"shallow"`` |
                 ``"deep"`` | ``"auto"``), ``synth_adaptive`` (bool, deep
                 only — start at 3 pages, escalate to 5 on low confidence),
                 ``synth_prompt`` (≤500 chars, appended to the answer
                 system prompt).
+
+                Async lifecycle (synth requests):
+                ``queued → running → serp_ready → completed | failed``.
+                ``serp_ready`` is the intermediate state where SERP hits
+                are available but synth is still running. The SDK's
+                ``wait=True`` mode keeps polling through it transparently;
+                ``wait=False`` callers polling via ``get_discovery_job``
+                can read partial results at that point and render
+                progressively.
 
         Returns:
             ``SearchResponse`` for ``service="search"`` (with
@@ -2371,19 +2385,37 @@ class AsyncWebCrawler:
             >>> # Sync — no synth.
             >>> resp = await crawler.discovery("search", query="...", country="us")
             >>>
+            >>> # Multi-backend fan-out + merge (RRF + URL dedup).
+            >>> resp = await crawler.discovery(
+            ...     "search", query="...", country="us",
+            ...     backends=["google", "bing", "brave"],
+            ... )
+            >>> # resp.hits has the merged + ranked union (~25-35 hits)
+            >>>
+            >>> # Opt into SERP cache for repeated identical queries.
+            >>> resp = await crawler.discovery(
+            ...     "search", query="...", country="us", use_cache=True,
+            ... )
+            >>>
             >>> # Synth — SDK posts to /async and polls; same call shape.
+            >>> # Combine with multi-backend for richer synth grounding.
             >>> resp = await crawler.discovery(
             ...     "search", query="warriors next game?", country="us",
+            ...     backends=["google", "bing", "brave"],
             ...     synthesize=True, synth_mode="auto",
             ... )
             >>> print(resp.synthesized_answer.text)
             >>>
             >>> # Async without waiting — get a handle to poll yourself.
+            >>> # `serp_ready` between `running` and `completed` lets you
+            >>> # render hits before synth lands.
             >>> handle = await crawler.discovery(
             ...     "search", query="...", synthesize=True, wait=False,
             ... )
             >>> while True:
             ...     status = await crawler.get_discovery_job(handle.job_id)
+            ...     if status.status == "serp_ready":
+            ...         render_hits(status.result)  # progressive UX
             ...     if status.status in ("completed", "failed"): break
         """
         from crawl4ai_cloud.models import (

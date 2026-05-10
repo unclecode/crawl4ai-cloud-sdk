@@ -1615,12 +1615,26 @@ export class AsyncWebCrawler {
    *   `"products"` / `"posts"` / `"videos"` to follow).
    * @param params - Per-vertical request fields. For `service="search"`:
    *   `query` (required), `country`, `language`, `location`, `num`,
-   *   `start`, `site`, `mode`, `time_period`, `bypass_cache`.
+   *   `start`, `site`, `mode`, `time_period`, `backends` (string[],
+   *   1-4 names from `google` / `bing` / `duckduckgo` / `brave`; omit
+   *   for the server's default of `["google"]`; >1 fans out + merges
+   *   via RRF + URL dedup), `use_cache` (boolean, default false —
+   *   opt into the SERP cache; legacy `bypass_cache` still wins when
+   *   true), plus the synth knobs (`synthesize`, `synth_mode`,
+   *   `synth_adaptive`, `synth_prompt`).
    *
    * @returns `SearchResponse` for `service="search"`. Generic object for
    *   verticals whose typed response shapes don't exist yet.
    *
+   * Async lifecycle (synth requests):
+   *   `queued → running → serp_ready → completed | failed`. The SDK's
+   *   `wait: true` mode polls through `serp_ready` transparently.
+   *   `wait: false` callers polling via `getDiscoveryJob` can read
+   *   the SERP-only response at `serp_ready` for progressive
+   *   rendering before synth lands.
+   *
    * @example
+   * // Default — single Google fetch, fresh.
    * const response = await crawler.discovery("search", {
    *   query: "best AI code review tools 2026",
    *   country: "us",
@@ -1628,6 +1642,17 @@ export class AsyncWebCrawler {
    * for (const hit of response.hits) {
    *   console.log(hit.rank, hit.title, hit.url);
    * }
+   *
+   * @example
+   * // Multi-backend fan-out + merge, with synth.
+   * const response = await crawler.discovery("search", {
+   *   query: "what is warrior's next game?",
+   *   country: "us",
+   *   backends: ["google", "bing", "brave"],
+   *   synthesize: true,
+   *   synth_mode: "auto",
+   * });
+   * console.log(response.synthesizedAnswer?.text);
    */
   async discovery(
     service: string,

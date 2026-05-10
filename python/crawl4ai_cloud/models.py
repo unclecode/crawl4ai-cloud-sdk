@@ -1865,22 +1865,45 @@ class DiscoveryJobStatus:
     `result` is the same shape the sync endpoint returns for the same
     service. For `service="search"` the SDK parses it into a SearchResponse
     via the `search_result` convenience property.
+
+    Status progression for synth requests::
+
+        queued → running → serp_ready → completed | failed
+
+    For non-synth requests, ``serp_ready`` is skipped::
+
+        queued → running → completed | failed
+
+    ``serp_ready`` is the intermediate state where SERP hits are
+    available but the synth LLM is still running. ``result`` exposes
+    the SERP-only response at that point so callers can render hits
+    progressively. The next poll picks up ``completed`` with the
+    synth fields populated.
     """
     job_id: str
     service: str
     status: str
     created_at: str = ""
     started_at: Optional[str] = None
+    serp_at: Optional[str] = None             # set when status flips to serp_ready
     completed_at: Optional[str] = None
     error: Optional[str] = None
     result: Optional[Dict[str, Any]] = None
 
     @property
     def search_result(self) -> Optional["SearchResponse"]:
-        """Parse `result` as a SearchResponse if this job is a search and completed."""
+        """Parse `result` as a SearchResponse if this job is a search
+        and `result` is present. Available at both `serp_ready` (SERP
+        only, no synth) and `completed` (full response)."""
         if self.service != "search" or not self.result:
             return None
         return SearchResponse.from_dict(self.result)
+
+    @property
+    def is_terminal(self) -> bool:
+        """True when the job has reached a final state (completed or
+        failed). ``serp_ready`` is NOT terminal — keep polling."""
+        return self.status in ("completed", "failed")
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "DiscoveryJobStatus":
@@ -1890,6 +1913,7 @@ class DiscoveryJobStatus:
             status=data.get("status", "queued"),
             created_at=data.get("created_at", "") or "",
             started_at=data.get("started_at"),
+            serp_at=data.get("serp_at"),
             completed_at=data.get("completed_at"),
             error=data.get("error"),
             result=data.get("result"),

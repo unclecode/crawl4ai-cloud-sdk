@@ -1579,25 +1579,52 @@ type DiscoveryService struct {
 	ResponseSchema map[string]interface{} `json:"response_schema"`
 }
 
+// Discovery async job lifecycle constants.
+//
+// Synth requests:    queued → running → serp_ready → completed | failed
+// Non-synth:         queued → running → completed | failed
+//
+// SerpReady is the intermediate state where SERP hits are available
+// but the synth LLM is still running. The poll endpoint exposes the
+// SERP-only response under Result at that point so callers can render
+// progressively before synth lands.
+const (
+	DiscoveryStatusQueued    = "queued"
+	DiscoveryStatusRunning   = "running"
+	DiscoveryStatusSerpReady = "serp_ready"
+	DiscoveryStatusCompleted = "completed"
+	DiscoveryStatusFailed    = "failed"
+)
+
 // DiscoveryJobHandle is returned by crawler.DiscoverySearchAsync (or
 // crawler.Discovery with synthesize=true and Wait=false). Pass JobID to
 // crawler.GetDiscoveryJob to poll.
 type DiscoveryJobHandle struct {
 	JobID     string `json:"job_id"`
 	Service   string `json:"service"`
-	Status    string `json:"status"`                       // "queued" | "running" | "completed" | "failed"
+	Status    string `json:"status"` // see DiscoveryStatus* constants
 	CreatedAt string `json:"created_at"`
 }
 
 // DiscoveryJobStatus is the GET /v1/discovery/jobs/{id} return shape.
-// Result is populated only when Status == "completed".
+// Result is populated at both Status == "serp_ready" (SERP only —
+// SynthesizedAnswer is null) and Status == "completed" (full response).
 type DiscoveryJobStatus struct {
 	JobID       string                 `json:"job_id"`
 	Service     string                 `json:"service"`
 	Status      string                 `json:"status"`
 	CreatedAt   string                 `json:"created_at"`
 	StartedAt   *string                `json:"started_at,omitempty"`
+	// SerpAt is set when the job transitioned to "serp_ready" (synth
+	// requests only). CompletedAt - SerpAt measures synth-only latency.
+	SerpAt      *string                `json:"serp_at,omitempty"`
 	CompletedAt *string                `json:"completed_at,omitempty"`
 	Error       *string                `json:"error,omitempty"`
 	Result      map[string]interface{} `json:"result,omitempty"`
+}
+
+// IsTerminal reports whether the job has reached a final state
+// (completed or failed). serp_ready is NOT terminal — keep polling.
+func (d *DiscoveryJobStatus) IsTerminal() bool {
+	return d.Status == DiscoveryStatusCompleted || d.Status == DiscoveryStatusFailed
 }

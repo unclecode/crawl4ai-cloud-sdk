@@ -1647,18 +1647,39 @@ export interface DiscoveryService {
 export interface DiscoveryJobHandle {
   jobId: string;
   service: string;
-  status: 'queued' | 'running' | 'completed' | 'failed';
+  status: DiscoveryJobLifecycleStatus;
   createdAt: string;
 }
 
+/** Status progression for discovery async jobs.
+ *
+ *  Synth requests:    queued → running → serp_ready → completed | failed
+ *  Non-synth:         queued → running → completed | failed
+ *
+ *  `serp_ready` is the intermediate state where SERP hits are
+ *  available but the synth LLM is still running. The poll endpoint
+ *  exposes the SERP-only response under `result` at that point so
+ *  callers can render hits progressively. */
+export type DiscoveryJobLifecycleStatus =
+  | 'queued'
+  | 'running'
+  | 'serp_ready'
+  | 'completed'
+  | 'failed';
+
 /** Returned by `crawler.getDiscoveryJob(jobId)`. `result` carries the
- *  same shape the sync endpoint returns once `status === "completed"`. */
+ *  same shape the sync endpoint returns. Available at both
+ *  `serp_ready` (SERP-only — `synthesized_answer` is null) and
+ *  `completed` (full response with synth fields populated). */
 export interface DiscoveryJobStatus {
   jobId: string;
   service: string;
-  status: 'queued' | 'running' | 'completed' | 'failed';
+  status: DiscoveryJobLifecycleStatus;
   createdAt: string;
   startedAt?: string | null;
+  /** Set when the job transitioned to `serp_ready` — synth requests
+   *  only. `completedAt - serpAt` measures synth-only latency. */
+  serpAt?: string | null;
   completedAt?: string | null;
   error?: string | null;
   result?: Record<string, unknown> | null;
@@ -1838,7 +1859,7 @@ export function discoveryJobHandleFromDict(d: Record<string, unknown>): Discover
   return {
     jobId: (d.job_id as string) ?? '',
     service: (d.service as string) ?? '',
-    status: ((d.status as 'queued' | 'running' | 'completed' | 'failed') ?? 'queued'),
+    status: ((d.status as DiscoveryJobLifecycleStatus) ?? 'queued'),
     createdAt: (d.created_at as string) ?? '',
   };
 }
@@ -1847,9 +1868,10 @@ export function discoveryJobStatusFromDict(d: Record<string, unknown>): Discover
   return {
     jobId: (d.job_id as string) ?? '',
     service: (d.service as string) ?? '',
-    status: ((d.status as 'queued' | 'running' | 'completed' | 'failed') ?? 'queued'),
+    status: ((d.status as DiscoveryJobLifecycleStatus) ?? 'queued'),
     createdAt: (d.created_at as string) ?? '',
     startedAt: (d.started_at as string | null) ?? null,
+    serpAt: (d.serp_at as string | null) ?? null,
     completedAt: (d.completed_at as string | null) ?? null,
     error: (d.error as string | null) ?? null,
     result: (d.result as Record<string, unknown> | null) ?? null,

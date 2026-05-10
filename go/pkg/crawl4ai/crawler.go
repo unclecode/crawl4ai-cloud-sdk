@@ -1914,10 +1914,26 @@ func (c *AsyncWebCrawler) Discovery(service string, params map[string]interface{
 // Returns *SearchResponse parsed from /v1/discovery/search. For any
 // other vertical, use Discovery() and read the generic map.
 //
+// Per-vertical request fields for service="search":
+//   - "query" (string, required, 1-500 chars)
+//   - "country" / "language" / "location"
+//   - "num" / "start" / "site" / "mode" / "time_period"
+//   - "backends" ([]string, 1-4 names from "google" / "bing" /
+//     "duckduckgo" / "brave"; omit for the server's default of
+//     ["google"]; >1 fans out + merges via RRF + URL dedup)
+//   - "use_cache" (bool, default false — opt into the SERP cache;
+//     legacy "bypass_cache" still wins when true)
+//   - synth knobs: "synthesize", "synth_mode", "synth_adaptive",
+//     "synth_prompt"
+//
 // Synth requests (params["synthesize"]=true) are auto-routed to the
 // async surface — sync 422s. The SDK posts to /v1/discovery/search/async
-// and polls /v1/discovery/jobs/{id} until completion (default Wait=true).
-// For caller-driven polling, use DiscoverySearchAsync + GetDiscoveryJob.
+// and polls /v1/discovery/jobs/{id} until completion. The async
+// lifecycle for synth is queued → running → serp_ready → completed |
+// failed; the SDK polls through serp_ready transparently. For
+// caller-driven polling (e.g. progressive UI rendering), use
+// DiscoverySearchAsync + GetDiscoveryJob and watch for
+// DiscoveryStatusSerpReady.
 //
 // Example — sync, no synth:
 //
@@ -1926,11 +1942,21 @@ func (c *AsyncWebCrawler) Discovery(service string, params map[string]interface{
 //	    "country": "us",
 //	})
 //
+// Example — multi-backend fan-out + merge:
+//
+//	resp, err := crawler.DiscoverySearch(map[string]interface{}{
+//	    "query":    "...",
+//	    "country":  "us",
+//	    "backends": []string{"google", "bing", "brave"},
+//	})
+//	// resp.Hits has the merged + RRF-ranked union (~25-35 hits)
+//
 // Example — synth, SDK polls transparently:
 //
 //	resp, err := crawler.DiscoverySearch(map[string]interface{}{
 //	    "query":       "what is warrior's next game?",
 //	    "country":     "us",
+//	    "backends":    []string{"google", "bing", "brave"},
 //	    "synthesize":  true,
 //	    "synth_mode":  "auto",
 //	})

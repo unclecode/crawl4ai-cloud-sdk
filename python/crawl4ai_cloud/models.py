@@ -1684,6 +1684,104 @@ class SearchMetadata:
 
 
 @dataclass
+class SynthesizedAnswer:
+    """LLM-synthesized answer from `crawler.discovery("search", ..., synthesize=True)`.
+
+    Populated only when synthesis succeeded (and only on the async surface
+    today — the sync endpoint rejects ``synthesize=true`` with 422).
+    `mode_used` is the resolved mode (``"shallow"`` or ``"deep"``); auto
+    resolves into one of these. `pages_fetched` is 0 in shallow runs.
+    `sources_used` cites hits by 1-based index.
+    """
+    text: str
+    model: str = ""                       # "<provider>/<model>" of the answer LLM
+    latency_ms: int = 0
+    confidence: float = 0.0               # 0.0–1.0; treat <0.3 as "unsure"
+    sources_used: List[int] = field(default_factory=list)
+    freshness_note: str = ""
+    mode_used: str = "shallow"            # "shallow" | "deep"
+    pages_fetched: int = 0
+    adaptive_escalated: bool = False      # True if deep+adaptive refetched + re-ran
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SynthesizedAnswer":
+        return cls(
+            text=data.get("text", ""),
+            model=data.get("model", "") or "",
+            latency_ms=int(data.get("latency_ms", 0) or 0),
+            confidence=float(data.get("confidence", 0.0) or 0.0),
+            sources_used=list(data.get("sources_used") or []),
+            freshness_note=data.get("freshness_note", "") or "",
+            mode_used=data.get("mode_used", "shallow") or "shallow",
+            pages_fetched=int(data.get("pages_fetched", 0) or 0),
+            adaptive_escalated=bool(data.get("adaptive_escalated", False)),
+        )
+
+
+@dataclass
+class RubricScore:
+    """Multi-dimensional classifier output for `synth_mode="auto"`.
+
+    Each dimension is 0-2; aggregate is the sum (0-6). The orchestrator
+    routes SHALLOW when aggregate >= threshold (default 4), else DEEP.
+    """
+    direct_answer: int = 0
+    temporal_fit: int = 0
+    coverage: int = 0
+    aggregate: int = 0
+    rationale: str = ""
+    model: Optional[str] = None           # classifier provider/model
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "RubricScore":
+        return cls(
+            direct_answer=int(data.get("direct_answer", 0) or 0),
+            temporal_fit=int(data.get("temporal_fit", 0) or 0),
+            coverage=int(data.get("coverage", 0) or 0),
+            aggregate=int(data.get("aggregate", 0) or 0),
+            rationale=data.get("rationale", "") or "",
+            model=data.get("model"),
+        )
+
+
+@dataclass
+class UsageComponent:
+    """One line item in the per-request usage breakdown."""
+    kind: str                             # "search" | "crawl" | "synth_llm" | "classifier_llm"
+    credits: float = 0.0
+    detail: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "UsageComponent":
+        return cls(
+            kind=data.get("kind", ""),
+            credits=float(data.get("credits", 0.0) or 0.0),
+            detail=dict(data.get("detail") or {}),
+        )
+
+
+@dataclass
+class SearchUsage:
+    """Per-request billing surface returned on every SearchResponse.
+
+    `credits` is the integer total billed. `components` itemizes what
+    contributed — search SERP, crawl pages, classifier LLM, synth LLM.
+    LLM components are billed at 0 credits in v1 but tracked for receipts.
+    """
+    credits: int = 1
+    components: List[UsageComponent] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SearchUsage":
+        return cls(
+            credits=int(data.get("credits", 1) or 1),
+            components=[
+                UsageComponent.from_dict(c) for c in (data.get("components") or [])
+            ],
+        )
+
+
+@dataclass
 class SearchResponse:
     """Top-level parsed SERP — every section nullable.
 
@@ -1697,6 +1795,10 @@ class SearchResponse:
     related_searches: List[str] = field(default_factory=list)
     knowledge_graph: Optional[KnowledgeGraph] = None
     ai_overview: Optional[AiOverview] = None
+    # Synthesized fields — populated only when synthesize=true succeeded.
+    synthesized_answer: Optional[SynthesizedAnswer] = None
+    classifier_score: Optional[RubricScore] = None
+    usage: SearchUsage = field(default_factory=SearchUsage)
     result_stats: ResultStats = field(default_factory=ResultStats)
     pagination: Pagination = field(default_factory=Pagination)
 
@@ -1721,8 +1823,76 @@ class SearchResponse:
                 AiOverview.from_dict(data["ai_overview"])
                 if data.get("ai_overview") else None
             ),
+            synthesized_answer=(
+                SynthesizedAnswer.from_dict(data["synthesized_answer"])
+                if data.get("synthesized_answer") else None
+            ),
+            classifier_score=(
+                RubricScore.from_dict(data["classifier_score"])
+                if data.get("classifier_score") else None
+            ),
+            usage=SearchUsage.from_dict(data.get("usage") or {}),
             result_stats=ResultStats.from_dict(data.get("result_stats") or {}),
             pagination=Pagination.from_dict(data.get("pagination") or {}),
+        )
+
+
+@dataclass
+class DiscoveryJobHandle:
+    """Lightweight handle returned by `crawler.discovery(..., wait=False)`.
+
+    Pass to `crawler.get_discovery_job(handle.job_id)` to poll.
+    """
+    job_id: str
+    service: str
+    status: str                           # "queued" | "running" | "completed" | "failed"
+    created_at: str = ""
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "DiscoveryJobHandle":
+        return cls(
+            job_id=data.get("job_id", ""),
+            service=data.get("service", ""),
+            status=data.get("status", "queued"),
+            created_at=data.get("created_at", "") or "",
+        )
+
+
+@dataclass
+class DiscoveryJobStatus:
+    """Returned by `crawler.get_discovery_job(job_id)`.
+
+    `result` is the same shape the sync endpoint returns for the same
+    service. For `service="search"` the SDK parses it into a SearchResponse
+    via the `search_result` convenience property.
+    """
+    job_id: str
+    service: str
+    status: str
+    created_at: str = ""
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    error: Optional[str] = None
+    result: Optional[Dict[str, Any]] = None
+
+    @property
+    def search_result(self) -> Optional["SearchResponse"]:
+        """Parse `result` as a SearchResponse if this job is a search and completed."""
+        if self.service != "search" or not self.result:
+            return None
+        return SearchResponse.from_dict(self.result)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "DiscoveryJobStatus":
+        return cls(
+            job_id=data.get("job_id", ""),
+            service=data.get("service", ""),
+            status=data.get("status", "queued"),
+            created_at=data.get("created_at", "") or "",
+            started_at=data.get("started_at"),
+            completed_at=data.get("completed_at"),
+            error=data.get("error"),
+            result=data.get("result"),
         )
 
 

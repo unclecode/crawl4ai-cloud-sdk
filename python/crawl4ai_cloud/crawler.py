@@ -2313,6 +2313,9 @@ class AsyncWebCrawler:
     async def discovery(
         self,
         service: str,
+        wait: bool = True,
+        poll_interval_s: float = 1.5,
+        poll_timeout_s: float = 300.0,
         **params: Any,
     ) -> Any:
         """Run a Discovery vertical and return the typed response.
@@ -2321,44 +2324,168 @@ class AsyncWebCrawler:
         New verticals don't add SDK methods; they become a new value for
         ``service``.
 
+        Sync vs. async:
+          - ``synthesize=False`` (default) → sync ``POST /v1/discovery/<service>``.
+            Returns the response inline.
+          - ``synthesize=True`` → the sync endpoint 422s, so the SDK posts
+            to ``POST /v1/discovery/<service>/async`` and (when ``wait=True``)
+            polls ``GET /v1/discovery/jobs/{id}`` until the job completes.
+            Same call shape as sync; the SDK papers over the split.
+          - ``synthesize=True`` + ``wait=False`` → returns a
+            :class:`DiscoveryJobHandle`. Caller polls via
+            :meth:`get_discovery_job`.
+
         Args:
             service: Vertical name (``"search"`` today; ``"people"`` /
                 ``"products"`` / ``"posts"`` / ``"videos"`` to follow).
+            wait: When True (default), the SDK transparently polls async
+                jobs until completion. When False, returns a
+                ``DiscoveryJobHandle`` for synth requests so the caller
+                can poll on their own cadence. Has no effect when
+                ``synthesize`` is False — the sync path always returns
+                inline.
+            poll_interval_s: Delay between job-status polls. Defaults to
+                1.5s; the SDK applies a small backoff (×1.15 per poll,
+                capped at 4s) to avoid hammering the proxy.
+            poll_timeout_s: Hard ceiling on total polling time. Raises
+                ``TimeoutError`` after this elapses with no terminal
+                status.
             **params: Per-vertical request fields. For ``service="search"``:
                 ``query`` (required), ``country``, ``language``, ``location``,
                 ``num``, ``start``, ``site``, ``mode``, ``time_period``,
-                ``bypass_cache``. See the Discovery docs for full schemas.
+                ``bypass_cache``, plus the synth knobs:
+                ``synthesize`` (bool), ``synth_mode`` (``"shallow"`` |
+                ``"deep"`` | ``"auto"``), ``synth_adaptive`` (bool, deep
+                only — start at 3 pages, escalate to 5 on low confidence),
+                ``synth_prompt`` (≤500 chars, appended to the answer
+                system prompt).
 
         Returns:
-            ``SearchResponse`` for ``service="search"``. Generic ``dict`` for
-            verticals whose typed response classes don't exist yet — callers
-            can index it the same way the API returns.
+            ``SearchResponse`` for ``service="search"`` (with
+            ``.synthesized_answer`` / ``.classifier_score`` / ``.usage``
+            populated when synth ran). Generic ``dict`` for verticals whose
+            typed response classes don't exist yet. ``DiscoveryJobHandle``
+            when ``synthesize=True`` and ``wait=False``.
 
         Example:
-            >>> response = await crawler.discovery(
-            ...     "search",
-            ...     query="best AI code review tools 2026",
-            ...     country="us",
+            >>> # Sync — no synth.
+            >>> resp = await crawler.discovery("search", query="...", country="us")
+            >>>
+            >>> # Synth — SDK posts to /async and polls; same call shape.
+            >>> resp = await crawler.discovery(
+            ...     "search", query="warriors next game?", country="us",
+            ...     synthesize=True, synth_mode="auto",
             ... )
-            >>> for hit in response.hits:
-            ...     print(hit.rank, hit.title, hit.url)
+            >>> print(resp.synthesized_answer.text)
+            >>>
+            >>> # Async without waiting — get a handle to poll yourself.
+            >>> handle = await crawler.discovery(
+            ...     "search", query="...", synthesize=True, wait=False,
+            ... )
+            >>> while True:
+            ...     status = await crawler.get_discovery_job(handle.job_id)
+            ...     if status.status in ("completed", "failed"): break
         """
-        from crawl4ai_cloud.models import SearchResponse
+        from crawl4ai_cloud.models import (
+            DiscoveryJobHandle, SearchResponse,
+        )
 
         # Drop None / empty-string optionals so the cache key matches what
         # `runDiscovery()` and the dashboard playground actually send. Wire
         # parity with the playground avoids surprise cache-misses between
         # surfaces that hit the same params.
         body = {k: v for k, v in params.items() if v is not None and v != ""}
+
+        # Synth-aware routing: the sync endpoint 422s when synthesize=true,
+        # so the SDK targets /async automatically. wait=True polls; wait=False
+        # returns a handle.
+        wants_synth = bool(body.get("synthesize"))
+        if wants_synth:
+            handle_data = await self._http.request(
+                "POST", f"/v1/discovery/{service}/async", json=body,
+            )
+            handle = DiscoveryJobHandle.from_dict(handle_data)
+            if not wait:
+                return handle
+
+            status = await self._wait_for_discovery_job(
+                handle.job_id,
+                poll_interval_s=poll_interval_s,
+                poll_timeout_s=poll_timeout_s,
+            )
+            if status.status == "failed":
+                raise RuntimeError(
+                    f"discovery({service}) async job failed: {status.error or 'unknown'}"
+                )
+            if not status.result:
+                raise RuntimeError(
+                    f"discovery({service}) async job completed but result missing"
+                )
+            if service == "search":
+                return SearchResponse.from_dict(status.result)
+            return status.result
+
+        # Sync path — body returned inline.
         data = await self._http.request(
             "POST", f"/v1/discovery/{service}", json=body,
         )
-
-        # Typed response per vertical. As more verticals ship typed models,
-        # extend this dispatch — generic dict otherwise.
         if service == "search":
             return SearchResponse.from_dict(data)
         return data
+
+    async def get_discovery_job(self, job_id: str) -> "DiscoveryJobStatus":
+        """Poll a Discovery async job by id.
+
+        ``GET /v1/discovery/jobs/{job_id}`` — used by callers that drive
+        polling themselves (i.e. opted out of ``wait=True`` on
+        :meth:`discovery`).
+
+        Args:
+            job_id: Returned in the ``DiscoveryJobHandle`` from
+                ``crawler.discovery(..., wait=False)``.
+
+        Returns:
+            :class:`DiscoveryJobStatus` — ``status`` is one of
+            ``queued`` | ``running`` | ``completed`` | ``failed``. When
+            ``completed``, the ``result`` field carries the same shape
+            the sync endpoint returns (use ``.search_result`` for typed
+            access on a search job).
+
+        Raises:
+            NotFoundError: marker missing or expired (15-min TTL).
+        """
+        from crawl4ai_cloud.models import DiscoveryJobStatus
+        data = await self._http.request("GET", f"/v1/discovery/jobs/{job_id}")
+        return DiscoveryJobStatus.from_dict(data)
+
+    async def _wait_for_discovery_job(
+        self,
+        job_id: str,
+        *,
+        poll_interval_s: float,
+        poll_timeout_s: float,
+    ) -> "DiscoveryJobStatus":
+        """Poll a discovery job until it reaches a terminal status.
+
+        Mild backoff (×1.15 per poll, capped at 4s) avoids hammering the
+        proxy if the job runs longer than expected.
+        """
+        import asyncio
+        import time as _time
+
+        deadline = _time.monotonic() + poll_timeout_s
+        interval = poll_interval_s
+        while True:
+            if _time.monotonic() > deadline:
+                raise TimeoutError(
+                    f"discovery job {job_id} did not complete within "
+                    f"{poll_timeout_s}s"
+                )
+            await asyncio.sleep(interval)
+            status = await self.get_discovery_job(job_id)
+            if status.status in ("completed", "failed"):
+                return status
+            interval = min(4.0, interval * 1.15)
 
     async def list_discovery_services(self) -> List["DiscoveryService"]:
         """Fetch the Discovery service registry.

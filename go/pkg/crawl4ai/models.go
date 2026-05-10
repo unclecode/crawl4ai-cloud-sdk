@@ -1511,19 +1511,63 @@ type SearchMetadata struct {
 	FetchedAt      *string `json:"fetched_at,omitempty"`
 }
 
+// SynthesizedAnswer is an LLM-synthesized answer over the SERP. Populated
+// only when crawler.DiscoverySearch was called with synthesize=true.
+// (Synth requires the async surface — the sync endpoint 422s.)
+type SynthesizedAnswer struct {
+	Text              string  `json:"text"`
+	Model             string  `json:"model"`               // "<provider>/<model>"
+	LatencyMs         int     `json:"latency_ms"`
+	Confidence        float64 `json:"confidence"`          // 0.0-1.0
+	SourcesUsed       []int   `json:"sources_used"`        // 1-based hit indices
+	FreshnessNote     string  `json:"freshness_note"`
+	ModeUsed          string  `json:"mode_used"`           // "shallow" | "deep"
+	PagesFetched      int     `json:"pages_fetched"`
+	AdaptiveEscalated bool    `json:"adaptive_escalated"`
+}
+
+// RubricScore is the multi-dim classifier output for synth_mode="auto".
+// Each dimension is 0-2; aggregate (0-6) drives the routing decision.
+type RubricScore struct {
+	DirectAnswer int     `json:"direct_answer"`
+	TemporalFit  int     `json:"temporal_fit"`
+	Coverage     int     `json:"coverage"`
+	Aggregate    int     `json:"aggregate"`
+	Rationale    string  `json:"rationale"`
+	Model        *string `json:"model,omitempty"`         // classifier provider/model
+}
+
+// UsageComponent is one line item in the per-request usage breakdown.
+type UsageComponent struct {
+	Kind    string                 `json:"kind"`            // "search" | "crawl" | "synth_llm" | "classifier_llm"
+	Credits float64                `json:"credits"`
+	Detail  map[string]interface{} `json:"detail"`
+}
+
+// SearchUsage is the per-request billing surface. Credits is the integer
+// total billed; Components itemizes what contributed.
+type SearchUsage struct {
+	Credits    int              `json:"credits"`
+	Components []UsageComponent `json:"components"`
+}
+
 // SearchResponse is the typed return of crawler.Discovery("search", ...).
 // Every section nullable — Google may not render PAA / KG / AI Overview
-// for a given query.
+// for a given query. SynthesizedAnswer / ClassifierScore are populated
+// only when synthesize=true succeeded.
 type SearchResponse struct {
-	Metadata          SearchMetadata   `json:"metadata"`
-	Hits              []SearchHit      `json:"hits"`
-	FeaturedSnippet   *FeaturedSnippet `json:"featured_snippet,omitempty"`
-	RelatedQuestions  []PaaItem        `json:"related_questions"`
-	RelatedSearches   []string         `json:"related_searches"`
-	KnowledgeGraph    *KnowledgeGraph  `json:"knowledge_graph,omitempty"`
-	AiOverview        *AiOverview      `json:"ai_overview,omitempty"`
-	ResultStats       ResultStats      `json:"result_stats"`
-	Pagination        Pagination       `json:"pagination"`
+	Metadata          SearchMetadata     `json:"metadata"`
+	Hits              []SearchHit        `json:"hits"`
+	FeaturedSnippet   *FeaturedSnippet   `json:"featured_snippet,omitempty"`
+	RelatedQuestions  []PaaItem          `json:"related_questions"`
+	RelatedSearches   []string           `json:"related_searches"`
+	KnowledgeGraph    *KnowledgeGraph    `json:"knowledge_graph,omitempty"`
+	AiOverview        *AiOverview        `json:"ai_overview,omitempty"`
+	SynthesizedAnswer *SynthesizedAnswer `json:"synthesized_answer,omitempty"`
+	ClassifierScore   *RubricScore       `json:"classifier_score,omitempty"`
+	Usage             SearchUsage        `json:"usage"`
+	ResultStats       ResultStats        `json:"result_stats"`
+	Pagination        Pagination         `json:"pagination"`
 }
 
 // DiscoveryService is one entry from GET /v1/discovery.
@@ -1533,4 +1577,27 @@ type DiscoveryService struct {
 	CreditCost     int                    `json:"credit_cost"`
 	RequestSchema  map[string]interface{} `json:"request_schema"`
 	ResponseSchema map[string]interface{} `json:"response_schema"`
+}
+
+// DiscoveryJobHandle is returned by crawler.DiscoverySearchAsync (or
+// crawler.Discovery with synthesize=true and Wait=false). Pass JobID to
+// crawler.GetDiscoveryJob to poll.
+type DiscoveryJobHandle struct {
+	JobID     string `json:"job_id"`
+	Service   string `json:"service"`
+	Status    string `json:"status"`                       // "queued" | "running" | "completed" | "failed"
+	CreatedAt string `json:"created_at"`
+}
+
+// DiscoveryJobStatus is the GET /v1/discovery/jobs/{id} return shape.
+// Result is populated only when Status == "completed".
+type DiscoveryJobStatus struct {
+	JobID       string                 `json:"job_id"`
+	Service     string                 `json:"service"`
+	Status      string                 `json:"status"`
+	CreatedAt   string                 `json:"created_at"`
+	StartedAt   *string                `json:"started_at,omitempty"`
+	CompletedAt *string                `json:"completed_at,omitempty"`
+	Error       *string                `json:"error,omitempty"`
+	Result      map[string]interface{} `json:"result,omitempty"`
 }

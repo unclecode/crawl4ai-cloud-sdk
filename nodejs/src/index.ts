@@ -75,8 +75,14 @@ export type {
   ResultStats,
   Pagination,
   SearchMetadata,
+  SynthesizedAnswer,
+  RubricScore,
+  UsageComponent,
+  SearchUsage,
   SearchResponse,
   DiscoveryService,
+  DiscoveryJobHandle,
+  DiscoveryJobStatus,
 } from './models';
 export type {
   // Crawler enrich method options (defined in crawler.ts)

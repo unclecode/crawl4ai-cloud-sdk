@@ -71,6 +71,10 @@ import {
   // Discovery / Search
   SearchResponse,
   DiscoveryService,
+  DiscoveryJobHandle,
+  DiscoveryJobStatus,
+  discoveryJobHandleFromDict,
+  discoveryJobStatusFromDict,
   searchResponseFromDict,
   discoveryServiceFromDict,
 } from './models';
@@ -1628,7 +1632,12 @@ export class AsyncWebCrawler {
   async discovery(
     service: string,
     params: Record<string, unknown> = {},
-  ): Promise<SearchResponse | Record<string, unknown>> {
+    options: { wait?: boolean; pollIntervalMs?: number; pollTimeoutMs?: number } = {},
+  ): Promise<SearchResponse | DiscoveryJobHandle | Record<string, unknown>> {
+    const wait = options.wait !== false;            // default true
+    const pollIntervalMs = options.pollIntervalMs ?? 1500;
+    const pollTimeoutMs = options.pollTimeoutMs ?? 5 * 60 * 1000;
+
     // Drop null / empty-string optionals so the cache key matches the
     // dashboard playground exactly. Wire parity avoids surprise misses
     // between surfaces hitting the same params.
@@ -1636,7 +1645,41 @@ export class AsyncWebCrawler {
     for (const [k, v] of Object.entries(params)) {
       if (v !== null && v !== undefined && v !== '') body[k] = v;
     }
-    const data = await this.http.post(`/v1/discovery/${service}`, body) as Record<string, unknown>;
+
+    // Synth-aware routing: the sync endpoint 422s when synthesize=true,
+    // so the SDK targets /async automatically. wait=true polls; wait=false
+    // returns a handle for the caller to drive.
+    const wantsSynth = Boolean(body.synthesize);
+    if (wantsSynth) {
+      const handleData = await this.http.post(
+        `/v1/discovery/${service}/async`, body,
+      ) as Record<string, unknown>;
+      const handle = discoveryJobHandleFromDict(handleData);
+      if (!wait) return handle;
+
+      const status = await this._waitForDiscoveryJob(
+        handle.jobId, { pollIntervalMs, pollTimeoutMs },
+      );
+      if (status.status === 'failed') {
+        throw new Error(
+          `discovery(${service}) async job failed: ${status.error ?? 'unknown'}`,
+        );
+      }
+      if (!status.result) {
+        throw new Error(
+          `discovery(${service}) async job completed but result missing`,
+        );
+      }
+      if (service === 'search') {
+        return searchResponseFromDict(status.result);
+      }
+      return status.result;
+    }
+
+    // Sync path — body returned inline.
+    const data = await this.http.post(
+      `/v1/discovery/${service}`, body,
+    ) as Record<string, unknown>;
     if (service === 'search') {
       return searchResponseFromDict(data);
     }
@@ -1654,6 +1697,41 @@ export class AsyncWebCrawler {
     const data = await this.http.get('/v1/discovery') as Record<string, unknown>;
     const services = (data.services as Record<string, unknown>[]) || [];
     return services.map(discoveryServiceFromDict);
+  }
+
+  /**
+   * Poll a Discovery async job by id.
+   *
+   * `GET /v1/discovery/jobs/{jobId}` — used by callers that opted out of
+   * `wait: true` on `discovery()` and drive polling themselves.
+   */
+  async getDiscoveryJob(jobId: string): Promise<DiscoveryJobStatus> {
+    const data = await this.http.get(
+      `/v1/discovery/jobs/${jobId}`,
+    ) as Record<string, unknown>;
+    return discoveryJobStatusFromDict(data);
+  }
+
+  /** Internal: poll a job until terminal status or timeout. Mild backoff
+   *  (×1.15 per poll, capped at 4s) so a slow job doesn't hammer the proxy. */
+  private async _waitForDiscoveryJob(
+    jobId: string,
+    opts: { pollIntervalMs: number; pollTimeoutMs: number },
+  ): Promise<DiscoveryJobStatus> {
+    const deadline = Date.now() + opts.pollTimeoutMs;
+    let interval = opts.pollIntervalMs;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      if (Date.now() > deadline) {
+        throw new Error(`discovery job ${jobId} did not complete within ${opts.pollTimeoutMs}ms`);
+      }
+      await new Promise((r) => setTimeout(r, interval));
+      const status = await this.getDiscoveryJob(jobId);
+      if (status.status === 'completed' || status.status === 'failed') {
+        return status;
+      }
+      interval = Math.min(4000, Math.round(interval * 1.15));
+    }
   }
 
   /**

@@ -17,7 +17,7 @@ Example:
     ```
 """
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"
 
 # Main crawler class
 from .crawler import AsyncWebCrawler
@@ -96,8 +96,14 @@ from .models import (
     ResultStats,
     Pagination,
     SearchMetadata,
+    SynthesizedAnswer,
+    RubricScore,
+    UsageComponent,
+    SearchUsage,
     SearchResponse,
     DiscoveryService,
+    DiscoveryJobHandle,
+    DiscoveryJobStatus,
 )
 
 # Errors
@@ -115,6 +121,12 @@ from .errors import (
 __all__ = [
     "__version__",
     "AsyncWebCrawler",
+    # Discovery / search synthesis (v1, since 0.10.0)
+    "Sitelink", "SearchHit", "FeaturedSnippet", "PaaItem",
+    "KnowledgeGraph", "AiOverview", "ResultStats", "Pagination",
+    "SearchMetadata", "SynthesizedAnswer", "RubricScore",
+    "UsageComponent", "SearchUsage", "SearchResponse",
+    "DiscoveryService", "DiscoveryJobHandle", "DiscoveryJobStatus",
     # Configs
     "CrawlerRunConfig", "BrowserConfig",
     "build_crawl_request", "sanitize_crawler_config", "sanitize_browser_config",

@@ -1570,6 +1570,52 @@ export interface SearchMetadata {
   fetchedAt?: string | null;
 }
 
+/** LLM-synthesized answer over the SERP. Populated only when
+ *  `synthesize: true` succeeded (and only via the async surface today —
+ *  the sync endpoint rejects synth with 422). */
+export interface SynthesizedAnswer {
+  text: string;
+  /** "<provider>/<model>" of the answer LLM. */
+  model: string;
+  latencyMs: number;
+  /** 0.0-1.0 from the answer LLM; treat <0.3 as "unsure". */
+  confidence: number;
+  /** 1-based hit indices the answer cited. */
+  sourcesUsed: number[];
+  freshnessNote: string;
+  /** Resolved mode — auto resolves to one of these. */
+  modeUsed: 'shallow' | 'deep';
+  pagesFetched: number;
+  /** True if deep+adaptive refetched + re-ran the answer LLM. */
+  adaptiveEscalated: boolean;
+}
+
+/** G-Eval style multi-dim classifier output for `synth_mode: "auto"`.
+ *  Each dim is 0-2; aggregate (0-6) drives the routing decision. */
+export interface RubricScore {
+  directAnswer: number;
+  temporalFit: number;
+  coverage: number;
+  aggregate: number;
+  rationale: string;
+  /** Classifier provider/model. */
+  model?: string | null;
+}
+
+/** One line item in the per-request usage breakdown. */
+export interface UsageComponent {
+  /** "search" | "crawl" | "synth_llm" | "classifier_llm" */
+  kind: string;
+  credits: number;
+  detail: Record<string, unknown>;
+}
+
+/** Per-request billing surface returned on every SearchResponse. */
+export interface SearchUsage {
+  credits: number;
+  components: UsageComponent[];
+}
+
 export interface SearchResponse {
   metadata: SearchMetadata;
   hits: SearchHit[];
@@ -1578,6 +1624,12 @@ export interface SearchResponse {
   relatedSearches: string[];
   knowledgeGraph?: KnowledgeGraph | null;
   aiOverview?: AiOverview | null;
+  /** Populated only when `synthesize: true` succeeded. */
+  synthesizedAnswer?: SynthesizedAnswer | null;
+  /** Populated only when `synth_mode: "auto"`. */
+  classifierScore?: RubricScore | null;
+  /** Itemized credits breakdown — search + crawl + LLMs. */
+  usage: SearchUsage;
   resultStats: ResultStats;
   pagination: Pagination;
 }
@@ -1588,6 +1640,28 @@ export interface DiscoveryService {
   creditCost: number;
   requestSchema: Record<string, unknown>;
   responseSchema: Record<string, unknown>;
+}
+
+/** Lightweight handle returned by `crawler.discovery(..., wait: false)`
+ *  when synth is requested. Pass to `crawler.getDiscoveryJob(jobId)` to poll. */
+export interface DiscoveryJobHandle {
+  jobId: string;
+  service: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  createdAt: string;
+}
+
+/** Returned by `crawler.getDiscoveryJob(jobId)`. `result` carries the
+ *  same shape the sync endpoint returns once `status === "completed"`. */
+export interface DiscoveryJobStatus {
+  jobId: string;
+  service: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  createdAt: string;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  error?: string | null;
+  result?: Record<string, unknown> | null;
 }
 
 function sitelinkFromDict(d: Record<string, unknown>): Sitelink {
@@ -1683,6 +1757,46 @@ function searchMetadataFromDict(d: Record<string, unknown>): SearchMetadata {
   };
 }
 
+function synthesizedAnswerFromDict(d: Record<string, unknown>): SynthesizedAnswer {
+  return {
+    text: (d.text as string) ?? '',
+    model: (d.model as string) ?? '',
+    latencyMs: (d.latency_ms as number) ?? 0,
+    confidence: (d.confidence as number) ?? 0,
+    sourcesUsed: ((d.sources_used as number[]) ?? []),
+    freshnessNote: (d.freshness_note as string) ?? '',
+    modeUsed: ((d.mode_used as 'shallow' | 'deep') ?? 'shallow'),
+    pagesFetched: (d.pages_fetched as number) ?? 0,
+    adaptiveEscalated: Boolean(d.adaptive_escalated),
+  };
+}
+
+function rubricScoreFromDict(d: Record<string, unknown>): RubricScore {
+  return {
+    directAnswer: (d.direct_answer as number) ?? 0,
+    temporalFit: (d.temporal_fit as number) ?? 0,
+    coverage: (d.coverage as number) ?? 0,
+    aggregate: (d.aggregate as number) ?? 0,
+    rationale: (d.rationale as string) ?? '',
+    model: (d.model as string | null) ?? null,
+  };
+}
+
+function usageComponentFromDict(d: Record<string, unknown>): UsageComponent {
+  return {
+    kind: (d.kind as string) ?? '',
+    credits: (d.credits as number) ?? 0,
+    detail: ((d.detail as Record<string, unknown>) ?? {}),
+  };
+}
+
+function searchUsageFromDict(d: Record<string, unknown>): SearchUsage {
+  return {
+    credits: (d.credits as number) ?? 1,
+    components: ((d.components as Record<string, unknown>[]) ?? []).map(usageComponentFromDict),
+  };
+}
+
 export function searchResponseFromDict(d: Record<string, unknown>): SearchResponse {
   return {
     metadata: searchMetadataFromDict((d.metadata as Record<string, unknown>) ?? {}),
@@ -1698,6 +1812,13 @@ export function searchResponseFromDict(d: Record<string, unknown>): SearchRespon
     aiOverview: d.ai_overview
       ? aiOverviewFromDict(d.ai_overview as Record<string, unknown>)
       : null,
+    synthesizedAnswer: d.synthesized_answer
+      ? synthesizedAnswerFromDict(d.synthesized_answer as Record<string, unknown>)
+      : null,
+    classifierScore: d.classifier_score
+      ? rubricScoreFromDict(d.classifier_score as Record<string, unknown>)
+      : null,
+    usage: searchUsageFromDict((d.usage as Record<string, unknown>) ?? {}),
     resultStats: resultStatsFromDict((d.result_stats as Record<string, unknown>) ?? {}),
     pagination: paginationFromDict((d.pagination as Record<string, unknown>) ?? {}),
   };
@@ -1710,5 +1831,27 @@ export function discoveryServiceFromDict(d: Record<string, unknown>): DiscoveryS
     creditCost: (d.credit_cost as number) ?? 1,
     requestSchema: ((d.request_schema as Record<string, unknown>) ?? {}),
     responseSchema: ((d.response_schema as Record<string, unknown>) ?? {}),
+  };
+}
+
+export function discoveryJobHandleFromDict(d: Record<string, unknown>): DiscoveryJobHandle {
+  return {
+    jobId: (d.job_id as string) ?? '',
+    service: (d.service as string) ?? '',
+    status: ((d.status as 'queued' | 'running' | 'completed' | 'failed') ?? 'queued'),
+    createdAt: (d.created_at as string) ?? '',
+  };
+}
+
+export function discoveryJobStatusFromDict(d: Record<string, unknown>): DiscoveryJobStatus {
+  return {
+    jobId: (d.job_id as string) ?? '',
+    service: (d.service as string) ?? '',
+    status: ((d.status as 'queued' | 'running' | 'completed' | 'failed') ?? 'queued'),
+    createdAt: (d.created_at as string) ?? '',
+    startedAt: (d.started_at as string | null) ?? null,
+    completedAt: (d.completed_at as string | null) ?? null,
+    error: (d.error as string | null) ?? null,
+    result: (d.result as Record<string, unknown> | null) ?? null,
   };
 }

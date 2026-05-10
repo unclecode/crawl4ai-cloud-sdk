@@ -1914,23 +1914,68 @@ func (c *AsyncWebCrawler) Discovery(service string, params map[string]interface{
 // Returns *SearchResponse parsed from /v1/discovery/search. For any
 // other vertical, use Discovery() and read the generic map.
 //
-// Example:
+// Synth requests (params["synthesize"]=true) are auto-routed to the
+// async surface — sync 422s. The SDK posts to /v1/discovery/search/async
+// and polls /v1/discovery/jobs/{id} until completion (default Wait=true).
+// For caller-driven polling, use DiscoverySearchAsync + GetDiscoveryJob.
+//
+// Example — sync, no synth:
 //
 //	resp, err := crawler.DiscoverySearch(map[string]interface{}{
 //	    "query":   "best AI code review tools 2026",
 //	    "country": "us",
 //	})
-//	for _, hit := range resp.Hits {
-//	    fmt.Println(hit.Rank, hit.Title, hit.URL)
-//	}
+//
+// Example — synth, SDK polls transparently:
+//
+//	resp, err := crawler.DiscoverySearch(map[string]interface{}{
+//	    "query":       "what is warrior's next game?",
+//	    "country":     "us",
+//	    "synthesize":  true,
+//	    "synth_mode":  "auto",
+//	})
+//	fmt.Println(resp.SynthesizedAnswer.Text)
 func (c *AsyncWebCrawler) DiscoverySearch(params map[string]interface{}) (*SearchResponse, error) {
 	body := filterDiscoveryParams(params)
+
+	// Synth-aware routing: post to /async + poll, or sync /v1/discovery/search.
+	if wantsSynth, _ := body["synthesize"].(bool); wantsSynth {
+		handle, err := c.DiscoverySearchAsync(body)
+		if err != nil {
+			return nil, err
+		}
+		status, err := c.waitForDiscoveryJob(
+			handle.JobID, 1500*time.Millisecond, 5*time.Minute,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if status.Status == "failed" {
+			msg := "unknown"
+			if status.Error != nil {
+				msg = *status.Error
+			}
+			return nil, fmt.Errorf("discovery search async job failed: %s", msg)
+		}
+		if status.Result == nil {
+			return nil, fmt.Errorf("discovery search async job completed but result missing")
+		}
+		raw, err := json.Marshal(status.Result)
+		if err != nil {
+			return nil, fmt.Errorf("marshal async result: %w", err)
+		}
+		var sr SearchResponse
+		if err := json.Unmarshal(raw, &sr); err != nil {
+			return nil, fmt.Errorf("decode SearchResponse: %w", err)
+		}
+		return &sr, nil
+	}
+
+	// Sync path.
 	data, err := c.http.Post("/v1/discovery/search", body, 60*time.Second)
 	if err != nil {
 		return nil, err
 	}
-	// Round-trip the map → SearchResponse via JSON. Cheaper than
-	// hand-walking every field; the response is bounded (<100KB).
 	raw, err := json.Marshal(data)
 	if err != nil {
 		return nil, fmt.Errorf("marshal discovery response: %w", err)
@@ -1940,6 +1985,75 @@ func (c *AsyncWebCrawler) DiscoverySearch(params map[string]interface{}) (*Searc
 		return nil, fmt.Errorf("decode SearchResponse: %w", err)
 	}
 	return &sr, nil
+}
+
+// DiscoverySearchAsync kicks off an async search job and returns a
+// handle. Use it with GetDiscoveryJob when you want to drive polling
+// yourself; for the common "fire and wait" case, just call DiscoverySearch
+// with synthesize=true (the SDK handles the async + poll for you).
+func (c *AsyncWebCrawler) DiscoverySearchAsync(params map[string]interface{}) (*DiscoveryJobHandle, error) {
+	body := filterDiscoveryParams(params)
+	data, err := c.http.Post("/v1/discovery/search/async", body, 60*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("marshal async start response: %w", err)
+	}
+	var handle DiscoveryJobHandle
+	if err := json.Unmarshal(raw, &handle); err != nil {
+		return nil, fmt.Errorf("decode DiscoveryJobHandle: %w", err)
+	}
+	return &handle, nil
+}
+
+// GetDiscoveryJob polls a discovery async job by id.
+// status.Result is populated when status.Status == "completed".
+func (c *AsyncWebCrawler) GetDiscoveryJob(jobID string) (*DiscoveryJobStatus, error) {
+	data, err := c.http.Get("/v1/discovery/jobs/"+jobID, nil)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("marshal job status: %w", err)
+	}
+	var status DiscoveryJobStatus
+	if err := json.Unmarshal(raw, &status); err != nil {
+		return nil, fmt.Errorf("decode DiscoveryJobStatus: %w", err)
+	}
+	return &status, nil
+}
+
+// waitForDiscoveryJob polls until the job hits a terminal status or the
+// deadline elapses. Mild backoff (×1.15 per poll, capped at 4s) so a
+// stalled job doesn't hammer the proxy.
+func (c *AsyncWebCrawler) waitForDiscoveryJob(
+	jobID string, interval time.Duration, timeout time.Duration,
+) (*DiscoveryJobStatus, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf(
+				"discovery job %s did not complete within %s", jobID, timeout,
+			)
+		}
+		time.Sleep(interval)
+		status, err := c.GetDiscoveryJob(jobID)
+		if err != nil {
+			return nil, err
+		}
+		if status.Status == "completed" || status.Status == "failed" {
+			return status, nil
+		}
+		// Backoff
+		next := time.Duration(float64(interval) * 1.15)
+		if next > 4*time.Second {
+			next = 4 * time.Second
+		}
+		interval = next
+	}
 }
 
 // ListDiscoveryServices fetches the GET /v1/discovery registry.

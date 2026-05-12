@@ -1632,6 +1632,13 @@ export interface SearchResponse {
   usage: SearchUsage;
   resultStats: ResultStats;
   pagination: Pagination;
+  /** Echoes what the caller sent — populated only when SearchRequest.enhance_query=true. */
+  originalQuery?: string | null;
+  /** Per-backend operator-rich query the API actually used — populated only
+   *  when SearchRequest.enhance_query=true. Each backend in a multi-backend
+   *  fan-out gets its own entry. Backends whose rewrite fell back to the
+   *  original (provider error, parse failure) hold the unchanged value. */
+  rewrittenQueries?: Record<string, string> | null;
 }
 
 export interface DiscoveryService {
@@ -1842,6 +1849,10 @@ export function searchResponseFromDict(d: Record<string, unknown>): SearchRespon
     usage: searchUsageFromDict((d.usage as Record<string, unknown>) ?? {}),
     resultStats: resultStatsFromDict((d.result_stats as Record<string, unknown>) ?? {}),
     pagination: paginationFromDict((d.pagination as Record<string, unknown>) ?? {}),
+    originalQuery: (d.original_query as string | null) ?? null,
+    rewrittenQueries: d.rewritten_queries
+      ? { ...(d.rewritten_queries as Record<string, string>) }
+      : null,
   };
 }
 

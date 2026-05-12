@@ -1568,6 +1568,14 @@ type SearchResponse struct {
 	Usage             SearchUsage        `json:"usage"`
 	ResultStats       ResultStats        `json:"result_stats"`
 	Pagination        Pagination         `json:"pagination"`
+	// OriginalQuery echoes what the caller sent. Populated only when
+	// SearchRequest enhance_query=true.
+	OriginalQuery *string `json:"original_query,omitempty"`
+	// RewrittenQueries maps each backend that ran to the operator-rich
+	// query the API actually used. Populated only when enhance_query=true.
+	// Backends whose rewrite fell back (provider error, parse failure)
+	// hold the unchanged original.
+	RewrittenQueries map[string]string `json:"rewritten_queries,omitempty"`
 }
 
 // DiscoveryService is one entry from GET /v1/discovery.

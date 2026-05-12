@@ -1923,6 +1923,11 @@ func (c *AsyncWebCrawler) Discovery(service string, params map[string]interface{
 //     ["google"]; >1 fans out + merges via RRF + URL dedup)
 //   - "use_cache" (bool, default false — opt into the SERP cache;
 //     legacy "bypass_cache" still wins when true)
+//   - "enhance_query" (bool, default false — LLM rewrites the query
+//     into a backend-specific operator-rich query before the SERP
+//     fetch. Response carries OriginalQuery + RewrittenQueries so
+//     callers see what hit the SERP. Never fails the search —
+//     provider errors fall back to the original query.)
 //   - synth knobs: "synthesize", "synth_mode", "synth_adaptive",
 //     "synth_prompt"
 //
@@ -1961,6 +1966,19 @@ func (c *AsyncWebCrawler) Discovery(service string, params map[string]interface{
 //	    "synth_mode":  "auto",
 //	})
 //	fmt.Println(resp.SynthesizedAnswer.Text)
+//
+// Example — LLM query rewrite per backend:
+//
+//	resp, err := crawler.DiscoverySearch(map[string]interface{}{
+//	    "query":         "best nurseries in Toronto for my 2 year old",
+//	    "country":       "ca",
+//	    "enhance_query": true,
+//	    "backends":      []string{"google", "bing"},
+//	})
+//	fmt.Println(*resp.OriginalQuery)
+//	for backend, rewritten := range resp.RewrittenQueries {
+//	    fmt.Printf("  %-8s %s\n", backend, rewritten)
+//	}
 func (c *AsyncWebCrawler) DiscoverySearch(params map[string]interface{}) (*SearchResponse, error) {
 	body := filterDiscoveryParams(params)
 

@@ -1801,6 +1801,13 @@ class SearchResponse:
     usage: SearchUsage = field(default_factory=SearchUsage)
     result_stats: ResultStats = field(default_factory=ResultStats)
     pagination: Pagination = field(default_factory=Pagination)
+    # Query-rewrite transparency — populated only when SearchRequest.enhance_query=True.
+    # `original_query` echoes what the caller sent; `rewritten_queries` maps
+    # each backend that ran to the operator-rich query that actually hit the
+    # SERP. Empty / None when enhance_query was off or every backend's
+    # rewrite fell back to the original.
+    original_query: Optional[str] = None
+    rewritten_queries: Optional[Dict[str, str]] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SearchResponse":
@@ -1834,6 +1841,8 @@ class SearchResponse:
             usage=SearchUsage.from_dict(data.get("usage") or {}),
             result_stats=ResultStats.from_dict(data.get("result_stats") or {}),
             pagination=Pagination.from_dict(data.get("pagination") or {}),
+            original_query=data.get("original_query"),
+            rewritten_queries=dict(data["rewritten_queries"]) if data.get("rewritten_queries") else None,
         )
 
 

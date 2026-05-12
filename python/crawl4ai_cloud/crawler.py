@@ -2358,6 +2358,13 @@ class AsyncWebCrawler:
                 server's default of ``["google"]``; >1 fans out + merges),
                 ``use_cache`` (bool, default False — opt into the SERP
                 cache; legacy ``bypass_cache`` still wins when True),
+                ``enhance_query`` (bool, default False — LLM rewrites the
+                query into a backend-specific operator-rich query before
+                the SERP fetch. Each backend gets its own rewrite. Adds
+                ~700-1500 ms. Response carries ``original_query`` +
+                ``rewritten_queries`` so callers see what hit the SERP.
+                Never fails the search — provider errors fall back to
+                the original query.),
                 plus the synth knobs:
                 ``synthesize`` (bool), ``synth_mode`` (``"shallow"`` |
                 ``"deep"`` | ``"auto"``), ``synth_adaptive`` (bool, deep
@@ -2396,6 +2403,18 @@ class AsyncWebCrawler:
             >>> resp = await crawler.discovery(
             ...     "search", query="...", country="us", use_cache=True,
             ... )
+            >>>
+            >>> # LLM query rewrite — natural language → operator-rich query
+            >>> # per backend. Each backend's rewrite uses its own operator
+            >>> # vocabulary (Google: `after:`, Bing: `loc:`, etc.).
+            >>> resp = await crawler.discovery(
+            ...     "search",
+            ...     query="best nurseries in Toronto for my 2 year old",
+            ...     country="ca", enhance_query=True,
+            ...     backends=["google", "bing"],
+            ... )
+            >>> print(resp.original_query)        # what you typed
+            >>> print(resp.rewritten_queries)     # {"google": "...", "bing": "..."}
             >>>
             >>> # Synth — SDK posts to /async and polls; same call shape.
             >>> # Combine with multi-backend for richer synth grounding.

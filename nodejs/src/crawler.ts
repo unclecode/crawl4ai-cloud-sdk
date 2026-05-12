@@ -1620,7 +1620,11 @@ export class AsyncWebCrawler {
    *   for the server's default of `["google"]`; >1 fans out + merges
    *   via RRF + URL dedup), `use_cache` (boolean, default false —
    *   opt into the SERP cache; legacy `bypass_cache` still wins when
-   *   true), plus the synth knobs (`synthesize`, `synth_mode`,
+   *   true), `enhance_query` (boolean, default false — LLM rewrites the
+   *   query into a backend-specific operator-rich query before the SERP
+   *   fetch. Response carries `originalQuery` + `rewrittenQueries`.
+   *   Never fails the search — provider errors fall back to original.),
+   *   plus the synth knobs (`synthesize`, `synth_mode`,
    *   `synth_adaptive`, `synth_prompt`).
    *
    * @returns `SearchResponse` for `service="search"`. Generic object for
@@ -1653,6 +1657,17 @@ export class AsyncWebCrawler {
    *   synth_mode: "auto",
    * });
    * console.log(response.synthesizedAnswer?.text);
+   *
+   * @example
+   * // LLM query rewrite per backend.
+   * const response = await crawler.discovery("search", {
+   *   query: "best nurseries in Toronto for my 2 year old",
+   *   country: "ca",
+   *   enhance_query: true,
+   *   backends: ["google", "bing"],
+   * });
+   * console.log(response.originalQuery);     // what you typed
+   * console.log(response.rewrittenQueries);  // { google: "...", bing: "..." }
    */
   async discovery(
     service: string,

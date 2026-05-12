@@ -17,7 +17,7 @@ Example:
     ```
 """
 
-__version__ = "0.11.0"
+__version__ = "0.12.0"
 
 # Main crawler class
 from .crawler import AsyncWebCrawler

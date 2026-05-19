@@ -15,7 +15,7 @@ import {
   ErrorHeaders,
 } from './errors';
 
-const VERSION = '0.6.1';
+const VERSION = '1.0.0';
 const DEFAULT_BASE_URL = 'https://api.crawl4ai.com';
 const DEFAULT_TIMEOUT = 120000; // 120 seconds in ms
 const DEFAULT_MAX_RETRIES = 3;
@@ -25,6 +25,7 @@ interface RequestOptions {
   params?: Record<string, string | number | boolean>;
   body?: Record<string, unknown>;
   timeout?: number;
+  headers?: Record<string, string>;
 }
 
 /**
@@ -99,7 +100,7 @@ export class HTTPClient {
     path: string,
     options: RequestOptions = {}
   ): Promise<Record<string, unknown>> {
-    const { method = 'GET', params, body, timeout = this.timeout } = options;
+    const { method = 'GET', params, body, timeout = this.timeout, headers: extraHeaders } = options;
 
     const url = this.buildUrl(path, params);
     const fetchOptions: RequestInit = {
@@ -108,6 +109,7 @@ export class HTTPClient {
         'X-API-Key': this.apiKey,
         'Content-Type': 'application/json',
         'User-Agent': `crawl4ai-cloud/${VERSION}`,
+        ...(extraHeaders ?? {}),
       },
       timeout,
     };
@@ -134,7 +136,20 @@ export class HTTPClient {
         let errorData: Record<string, unknown> = {};
         try {
           errorData = (await response.json()) as Record<string, unknown>;
-          detail = (errorData.detail as string) || JSON.stringify(errorData);
+          const rawDetail = errorData.detail;
+          // FastAPI 422 sends a list of validation errors; coerce to
+          // string so downstream callers can do .toLowerCase() etc.
+          if (typeof rawDetail === 'string') {
+            detail = rawDetail;
+          } else if (rawDetail !== undefined && rawDetail !== null) {
+            try {
+              detail = JSON.stringify(rawDetail);
+            } catch {
+              detail = String(rawDetail);
+            }
+          } else {
+            detail = JSON.stringify(errorData);
+          }
         } catch {
           detail = (await response.text()) || `HTTP ${response.status}`;
         }
@@ -211,9 +226,10 @@ export class HTTPClient {
   async post(
     path: string,
     body?: Record<string, unknown>,
-    timeout?: number
+    timeout?: number,
+    headers?: Record<string, string>,
   ): Promise<Record<string, unknown>> {
-    return this.request(path, { method: 'POST', body, timeout });
+    return this.request(path, { method: 'POST', body, timeout, headers });
   }
 
   /**

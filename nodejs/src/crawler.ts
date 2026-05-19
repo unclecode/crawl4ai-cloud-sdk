@@ -3,7 +3,7 @@
  */
 
 import { HTTPClient } from './client';
-import { TimeoutError } from './errors';
+import { TimeoutError, ContextNotImplementedError } from './errors';
 import {
   CrawlResult,
   CrawlJob,
@@ -13,7 +13,6 @@ import {
   ScanJobStatus,
   SiteScanConfig,
   SiteExtractConfig,
-  ContextResult,
   GeneratedSchema,
   StorageUsage,
   ProxyConfig,
@@ -27,7 +26,6 @@ import {
   siteExtractConfigToDict,
   isScanResultAsync,
   isScanJobComplete,
-  contextResultFromDict,
   generatedSchemaFromDict,
   storageUsageFromDict,
   isJobComplete,
@@ -86,6 +84,25 @@ import {
   sanitizeBrowserConfig,
   normalizeProxy,
 } from './configs';
+import {
+  PillarConfig,
+  ConstraintsInput,
+  Constraints,
+  constraintsToDict,
+  ContextResult,
+  contextResultFromDict,
+  ContextOutput,
+  contextOutputFromDict,
+  ContextEvent,
+  parseContextEvent,
+  ContextVersion,
+  contextVersionFromDict,
+  ContextDiff,
+  contextDiffFromDict,
+  ContextCatalog,
+  CatalogEntry,
+  catalogEntryFromDict,
+} from './context';
 
 export interface AsyncWebCrawlerOptions {
   apiKey?: string;
@@ -953,32 +970,318 @@ export class AsyncWebCrawler {
     );
   }
 
-  // -------------------------------------------------------------------------
-  // Context API
-  // -------------------------------------------------------------------------
+  // =========================================================================
+  // Context v2 — four-pillar research pipeline
+  // =========================================================================
+  // See `crawl4ai-cloud/src/context.ts` for pillar builders (Source / Strategy
+  // / Shape / Reconciler) and the typed event/result types. See the public
+  // walkthrough at /docs/guides/context-walkthrough for the worked example.
 
   /**
-   * Build context from a search query.
+   * Compose the POST /v1/context body. Validates that `generatorId` and
+   * pillar params (sources / strategy / shape / reconciler) aren't both
+   * passed (mutually exclusive). Until public generator CRUD ships, ad-hoc
+   * pillar configs raise a clear error pointing at the dashboard.
    */
-  async context(
-    query: string,
-    options: {
-      paaLimit?: number;
-      resultsPerPaa?: number;
-      wait?: boolean;
-    } = {}
+  private _buildContextBody(args: {
+    intent: string;
+    mission?: string;
+    generatorId?: string;
+    sources?: PillarConfig[];
+    strategy?: PillarConfig;
+    shape?: PillarConfig;
+    reconciler?: PillarConfig;
+    constraints?: ConstraintsInput;
+    webhookUrl?: string;
+  }): Record<string, unknown> {
+    const hasPillars =
+      args.sources !== undefined ||
+      args.strategy !== undefined ||
+      args.shape !== undefined ||
+      args.reconciler !== undefined;
+
+    if (args.generatorId !== undefined && hasPillars) {
+      throw new Error(
+        'Pass either `generatorId` OR pillar params ' +
+          '(sources/strategy/shape/reconciler), not both.',
+      );
+    }
+    if (hasPillars) {
+      throw new ContextNotImplementedError(
+        "Custom Source/Strategy/Shape/Reconciler configs aren't yet " +
+          'accepted by the public /v1/context endpoint. Today, custom ' +
+          'pillars must be wrapped in a saved generator — create one ' +
+          'in the dashboard (/context page), then pass its `generatorId` ' +
+          'to crawler.context(). Pillar builders (e.g. Source.googleWeb(...)) ' +
+          'are still useful for inspecting and serialising configs locally; ' +
+          'the SDK will auto-create-and-submit transparently once public ' +
+          'generator CRUD ships.',
+      );
+    }
+
+    const body: Record<string, unknown> = { intent: String(args.intent) };
+    if (args.mission) body.mission = String(args.mission);
+    if (args.generatorId) body.generator_id = String(args.generatorId);
+    if (args.constraints !== undefined) {
+      body.constraints = constraintsToDict(args.constraints);
+    }
+    if (args.webhookUrl) body.webhook_url = String(args.webhookUrl);
+    return body;
+  }
+
+  /**
+   * Submit a Context run.
+   *
+   * One-liner — uses the user's default generator (`google_web` +
+   * `all_items` + `raw` + `noop`):
+   *
+   * ```ts
+   * const result = await crawler.context({
+   *   intent: 'compare LangChain and AutoGen',
+   * });
+   * for (const item of (await result.output()).items) {
+   *   console.log(item.title, '—', item.url);
+   * }
+   * ```
+   *
+   * Pillar params are reserved for the day public generator CRUD ships on
+   * the API-key surface. Until then, custom pillars must be wrapped in a
+   * saved generator (created via the dashboard); pass its `generatorId`.
+   */
+  async context(opts: {
+    intent: string;
+    mission?: string;
+    generatorId?: string;
+    sources?: PillarConfig[];
+    strategy?: PillarConfig;
+    shape?: PillarConfig;
+    reconciler?: PillarConfig;
+    constraints?: ConstraintsInput;
+    webhookUrl?: string;
+    idempotencyKey?: string;
+    wait?: boolean;
+    pollIntervalMs?: number;
+    timeoutMs?: number;
+  }): Promise<ContextResult> {
+    if (!opts.intent || !opts.intent.trim()) {
+      throw new Error('`intent` is required and must be non-empty');
+    }
+    const wait = opts.wait !== false;
+    const pollIntervalMs = opts.pollIntervalMs ?? 3000;
+    const timeoutMs = opts.timeoutMs ?? 600_000;
+
+    const body = this._buildContextBody(opts);
+    const headers: Record<string, string> = {};
+    if (opts.idempotencyKey) headers['Idempotency-Key'] = String(opts.idempotencyKey);
+
+    const data = await this.http.post(
+      '/v1/context',
+      body,
+      30000,
+      Object.keys(headers).length ? headers : undefined,
+    );
+    const runId = String(data.run_id ?? '');
+    const result = await this.getContextRun(runId);
+
+    if (!wait || result.isTerminal) return result;
+
+    return this._waitContextRun(runId, { pollIntervalMs, timeoutMs });
+  }
+
+  /**
+   * Submit (or attach to) a Context run and yield typed events.
+   *
+   * Two modes:
+   * 1. Submit + stream — pass `intent` (and optional pillar params).
+   *    Submits the run, opens the SSE stream, yields typed events until
+   *    terminal.
+   * 2. Attach — pass `runId` only. Opens the SSE stream on an existing run.
+   */
+  async *contextStream(opts: {
+    intent?: string;
+    runId?: string;
+    mission?: string;
+    generatorId?: string;
+    sources?: PillarConfig[];
+    strategy?: PillarConfig;
+    shape?: PillarConfig;
+    reconciler?: PillarConfig;
+    constraints?: ConstraintsInput;
+    webhookUrl?: string;
+    idempotencyKey?: string;
+  }): AsyncGenerator<ContextEvent> {
+    let runId = opts.runId;
+    if (runId === undefined) {
+      if (!opts.intent) {
+        throw new Error(
+          'Pass `intent` to submit + stream, or `runId` to attach to an existing run.',
+        );
+      }
+      const body = this._buildContextBody({
+        intent: opts.intent,
+        mission: opts.mission,
+        generatorId: opts.generatorId,
+        sources: opts.sources,
+        strategy: opts.strategy,
+        shape: opts.shape,
+        reconciler: opts.reconciler,
+        constraints: opts.constraints,
+        webhookUrl: opts.webhookUrl,
+      });
+      const headers: Record<string, string> = {};
+      if (opts.idempotencyKey) headers['Idempotency-Key'] = String(opts.idempotencyKey);
+      const submit = await this.http.post(
+        '/v1/context',
+        body,
+        30000,
+        Object.keys(headers).length ? headers : undefined,
+      );
+      runId = String(submit.run_id ?? '');
+    }
+
+    for await (const [eventType, payload] of this.http.streamSse(
+      `/v1/context/${runId}/stream`,
+    )) {
+      const typed = parseContextEvent(eventType, payload);
+      if (typed !== null) {
+        yield typed;
+        if (typed.type === 'terminal') return;
+      }
+    }
+  }
+
+  /**
+   * Stream a Context run to terminal. Falls back to polling if the stream
+   * dies before terminal.
+   */
+  private async _waitContextRun(
+    runId: string,
+    opts: { pollIntervalMs: number; timeoutMs: number },
   ): Promise<ContextResult> {
-    const { paaLimit = 3, resultsPerPaa = 5 } = options;
+    const deadline = Date.now() + opts.timeoutMs;
+    try {
+      for await (const event of this.contextStream({ runId })) {
+        if (event.type === 'terminal') break;
+        if (Date.now() > deadline) {
+          throw new TimeoutError(
+            `Context run ${runId} did not terminate within ${opts.timeoutMs}ms`,
+            408,
+            {},
+            {},
+          );
+        }
+      }
+    } catch (err) {
+      if (err instanceof TimeoutError) throw err;
+      // Stream died — fall through to polling for the final state.
+    }
 
-    const body: Record<string, unknown> = {
-      query,
-      strategy: 'serper_paa',
-      paa_limit: paaLimit,
-      results_per_paa: resultsPerPaa,
+    while (true) {
+      const result = await this.getContextRun(runId);
+      if (result.isTerminal) return result;
+      if (Date.now() > deadline) {
+        throw new TimeoutError(
+          `Context run ${runId} did not terminate within ${opts.timeoutMs}ms`,
+          408,
+          {},
+          {},
+        );
+      }
+      await new Promise((r) => setTimeout(r, opts.pollIntervalMs));
+    }
+  }
+
+  /** Fetch the current state of a Context run. */
+  async getContextRun(runId: string): Promise<ContextResult> {
+    const data = await this.http.get(`/v1/context/${runId}`);
+    return contextResultFromDict(data, this);
+  }
+
+  /** Fetch the ShapedOutput for a Context run. */
+  async getContextOutput(runId: string): Promise<ContextOutput> {
+    const data = await this.http.get(`/v1/context/${runId}/output`);
+    return contextOutputFromDict(data);
+  }
+
+  /** Cancel an in-flight Context run (asynchronous on the server side). */
+  async cancelContextRun(runId: string): Promise<void> {
+    await this.http.delete(`/v1/context/${runId}`);
+  }
+
+  /**
+   * Create a new version on the same chain. Re-runs the entire pipeline
+   * against the same generator config. Returns the new version's
+   * ContextResult.
+   *
+   * Set `wait: false` to return immediately after submit.
+   */
+  async refreshContext(
+    runId: string,
+    opts: { wait?: boolean; pollIntervalMs?: number; timeoutMs?: number } = {},
+  ): Promise<ContextResult> {
+    const wait = opts.wait !== false;
+    const pollIntervalMs = opts.pollIntervalMs ?? 3000;
+    const timeoutMs = opts.timeoutMs ?? 600_000;
+
+    const data = await this.http.post(`/v1/context/${runId}/refresh`);
+    const newRunId = String(data.run_id ?? runId);
+    const result = await this.getContextRun(newRunId);
+    if (!wait || result.isTerminal) return result;
+    return this._waitContextRun(newRunId, { pollIntervalMs, timeoutMs });
+  }
+
+  /** List all versions on a Context run's chain (newest last). */
+  async listContextVersions(runId: string): Promise<ContextVersion[]> {
+    const data = await this.http.get(`/v1/context/${runId}/versions`);
+    const versions = (data.versions as Record<string, unknown>[] | undefined) ?? [];
+    return versions.map(contextVersionFromDict);
+  }
+
+  /**
+   * Diff two Context versions. When both ids are on the same chain, diffs
+   * the two most recent versions; when they're on different chains, diffs
+   * cross-chain.
+   */
+  async diffContext(runId: string, otherRunId: string): Promise<ContextDiff> {
+    const data = await this.http.get(`/v1/context/${runId}/diff/${otherRunId}`);
+    return contextDiffFromDict(data);
+  }
+
+  /**
+   * Move the chain's current pointer back to an earlier version. Pointer
+   * move, not delete — the newer version stays on the chain and you can
+   * roll forward again.
+   */
+  async rollbackContext(runId: string, version: number): Promise<ContextResult> {
+    await this.http.post(
+      `/v1/context/${runId}/rollback/${Math.trunc(version)}`,
+    );
+    return this.getContextRun(runId);
+  }
+
+  /**
+   * Discover what Sources / Strategies / Shapes / Reconcilers are
+   * available. Useful for building a generator-creation UI.
+   */
+  async contextCatalog(): Promise<ContextCatalog> {
+    const fetchOne = async (path: string): Promise<CatalogEntry[]> => {
+      try {
+        const data = await this.http.get(path);
+        const items =
+          (data.items as Record<string, unknown>[] | undefined) ??
+          (Array.isArray(data) ? (data as unknown as Record<string, unknown>[]) : []);
+        return items.map(catalogEntryFromDict);
+      } catch {
+        return [];
+      }
     };
-
-    const data = await this.http.post('/v1/context', body, 300000);
-    return contextResultFromDict(data);
+    const [sources, strategies, shapes, reconcilers] = await Promise.all([
+      fetchOne('/v1/context/sources'),
+      fetchOne('/v1/context/strategies'),
+      fetchOne('/v1/context/shapes'),
+      fetchOne('/v1/context/reconcilers'),
+    ]);
+    return { sources, strategies, shapes, reconcilers };
   }
 
   // -------------------------------------------------------------------------

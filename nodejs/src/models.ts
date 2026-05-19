@@ -431,36 +431,6 @@ export function isDeepCrawlComplete(result: DeepCrawlResult): boolean {
 }
 
 /**
- * Context API response.
- */
-export interface ContextResult {
-  jobId: string;
-  status: string;
-  query: string;
-  downloadUrl: string;
-  urlsCrawled: number;
-  sizeBytes: number;
-  durationMs: number;
-  cached: boolean;
-}
-
-/**
- * Create ContextResult from API response.
- */
-export function contextResultFromDict(data: Record<string, unknown>): ContextResult {
-  return {
-    jobId: data.job_id as string,
-    status: data.status as string,
-    query: data.query as string,
-    downloadUrl: data.download_url as string,
-    sizeBytes: (data.storage_size_bytes || 0) as number,
-    urlsCrawled: (data.urls_crawled || 0) as number,
-    durationMs: (data.duration_ms || 0) as number,
-    cached: (data.cached || false) as boolean,
-  };
-}
-
-/**
  * LLM token usage (per-request).
  */
 export interface LLMUsage {

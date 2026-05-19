@@ -166,3 +166,18 @@ export class ServerError extends CloudError {
     this.name = 'ServerError';
   }
 }
+
+/**
+ * Raised by client-side validation when a feature isn't yet wired through
+ * the public API. Carries an actionable message pointing at the workaround.
+ *
+ * Used today by `crawler.context()` when ad-hoc pillar configs are passed
+ * without a `generatorId` (custom pillars must be wrapped in a saved
+ * generator until public generator CRUD ships on the API-key surface).
+ */
+export class ContextNotImplementedError extends CloudError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ContextNotImplementedError';
+  }
+}

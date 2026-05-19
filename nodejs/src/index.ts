@@ -12,7 +12,7 @@
  * ```
  */
 
-export const VERSION = '0.8.0';
+export const VERSION = '1.0.0';
 
 // Main crawler class
 export { AsyncWebCrawler } from './crawler';
@@ -115,7 +115,6 @@ export type {
   ScanResult,
   ScanOptions,
   DomainScanUrlInfo,
-  ContextResult,
   GeneratedSchema,
   StorageUsage,
   ProxyConfig,
@@ -132,7 +131,6 @@ export {
   crawlJobFromDict,
   deepCrawlResultFromDict,
   scanResultFromDict,
-  contextResultFromDict,
   generatedSchemaFromDict,
   storageUsageFromDict,
   isJobComplete,
@@ -173,6 +171,45 @@ export {
   isEnrichJobSuccessful,
 } from './models';
 
+// Context v2 — four-pillar research pipeline
+export {
+  Source,
+  Strategy,
+  Shape,
+  Reconciler,
+  Constraints,
+  constraintsToDict,
+  ContextResult,
+  contextResultFromDict,
+  contextOutputFromDict,
+  contextItemFromDict,
+  contextVersionFromDict,
+  contextDiffFromDict,
+  catalogEntryFromDict,
+  parseContextEvent,
+  CONTEXT_TERMINAL_STATUSES,
+  CONTEXT_ACTIVE_STATUSES,
+  PHASE_PLANNING,
+  PHASE_CRAWLING,
+  PHASE_SHAPING,
+  CONTEXT_PHASES,
+} from './context';
+export type {
+  PillarConfig,
+  ConstraintsInput,
+  ContextItem,
+  ContextOutput,
+  ContextEvent,
+  StatusEvent,
+  PhaseProgressInit,
+  PhaseProgressItemUpdate,
+  TerminalEvent,
+  ContextVersion,
+  ContextDiff,
+  CatalogEntry,
+  ContextCatalog,
+} from './context';
+
 // Errors
 export {
   CloudError,
@@ -183,5 +220,6 @@ export {
   ValidationError,
   TimeoutError,
   ServerError,
+  ContextNotImplementedError,
 } from './errors';
 export type { ErrorResponse, ErrorHeaders } from './errors';

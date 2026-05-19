@@ -17,7 +17,7 @@ Example:
     ```
 """
 
-__version__ = "0.12.0"
+__version__ = "1.0.0"
 
 # Main crawler class
 from .crawler import AsyncWebCrawler
@@ -47,7 +47,6 @@ from .models import (
     SiteScanConfig,
     SiteExtractConfig,
     GeneratedConfig,
-    ContextResult,
     GeneratedSchema,
     StorageUsage,
     ProxyConfig,
@@ -106,6 +105,37 @@ from .models import (
     DiscoveryJobStatus,
 )
 
+# Context v2 — four-pillar pipeline. Replaces the old PAA-based ContextResult.
+from .context import (
+    # Pillar builders
+    Source,
+    Strategy,
+    Shape,
+    Reconciler,
+    # Knobs
+    Constraints,
+    # Output types
+    ContextItem,
+    ContextOutput,
+    # Result + events
+    ContextResult,
+    StatusEvent,
+    PhaseProgressInit,
+    PhaseProgressItemUpdate,
+    TerminalEvent,
+    ContextEvent,
+    # Versions / diff / catalog
+    ContextVersion,
+    ContextDiff,
+    CatalogEntry,
+    ContextCatalog,
+    # Constants
+    TERMINAL_STATUSES as CONTEXT_TERMINAL_STATUSES,
+    PHASE_PLANNING,
+    PHASE_CRAWLING,
+    PHASE_SHAPING,
+)
+
 # Errors
 from .errors import (
     CloudError,
@@ -135,7 +165,7 @@ __all__ = [
     "CrawlResult", "CrawlJob", "JobProgress", "MarkdownResult",
     "DeepCrawlResult", "ScanUrlInfo", "ScanResult", "ScanJobStatus",
     "DomainScanUrlInfo", "SiteScanConfig", "SiteExtractConfig", "GeneratedConfig",
-    "ContextResult", "GeneratedSchema", "StorageUsage", "ProxyConfig", "LLMUsage",
+    "GeneratedSchema", "StorageUsage", "ProxyConfig", "LLMUsage",
     "Usage", "CrawlUsageMetrics", "LLMUsageMetrics", "StorageUsageMetrics",
     # Wrapper API models
     "WrapperUsage", "MarkdownResponse", "ScreenshotResponse", "ExtractResponse",
@@ -147,6 +177,16 @@ __all__ = [
     "EnrichLlmBucket", "EnrichUsage", "EnrichJobStatus", "EnrichJobListItem",
     "EnrichEvent",
     "ENRICH_TERMINAL_STATUSES", "ENRICH_PAUSED_STATUSES",
+    # Context v2 — four-pillar pipeline
+    "Source", "Strategy", "Shape", "Reconciler",
+    "Constraints",
+    "ContextItem", "ContextOutput",
+    "ContextResult",
+    "StatusEvent", "PhaseProgressInit", "PhaseProgressItemUpdate", "TerminalEvent",
+    "ContextEvent",
+    "ContextVersion", "ContextDiff", "CatalogEntry", "ContextCatalog",
+    "CONTEXT_TERMINAL_STATUSES",
+    "PHASE_PLANNING", "PHASE_CRAWLING", "PHASE_SHAPING",
     # Errors
     "CloudError", "AuthenticationError", "RateLimitError", "QuotaExceededError",
     "NotFoundError", "ValidationError", "TimeoutError", "ServerError",

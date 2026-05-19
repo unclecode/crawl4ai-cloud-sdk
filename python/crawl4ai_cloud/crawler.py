@@ -10,7 +10,6 @@ from .models import (
     CrawlJob,
     CrawlResult,
     DeepCrawlResult,
-    ContextResult,
     GeneratedSchema,
     StorageUsage,
     ProxyConfig,
@@ -31,6 +30,22 @@ from .configs import (
     sanitize_browser_config,
     normalize_proxy,
     build_crawl_request,
+)
+from .context import (
+    ContextResult,
+    ContextOutput,
+    ContextEvent,
+    ContextVersion,
+    ContextDiff,
+    ContextCatalog,
+    CatalogEntry,
+    Constraints as ContextConstraints,
+    StatusEvent,
+    TerminalEvent,
+    PhaseProgressInit,
+    PhaseProgressItemUpdate,
+    TERMINAL_STATUSES as CONTEXT_TERMINAL_STATUSES,
+    _parse_event,
 )
 
 
@@ -1090,44 +1105,381 @@ class AsyncWebCrawler:
     # Context API
     # -------------------------------------------------------------------------
 
+    # =========================================================================
+    # Context v2 — four-pillar research pipeline
+    # =========================================================================
+    # See `crawl4ai_cloud.context` for the pillar builders (Source / Strategy /
+    # Shape / Reconciler) and the typed event/result types. See the public
+    # walkthrough at /docs/guides/context-walkthrough for the worked example.
+
+    def _build_context_body(
+        self,
+        *,
+        intent: str,
+        mission: Optional[str] = None,
+        generator_id: Optional[str] = None,
+        sources: Optional[List[Dict[str, Any]]] = None,
+        strategy: Optional[Dict[str, Any]] = None,
+        shape: Optional[Dict[str, Any]] = None,
+        reconciler: Optional[Dict[str, Any]] = None,
+        constraints: Optional[Union[ContextConstraints, Dict[str, Any]]] = None,
+        webhook_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Compose the POST /v1/context body.
+
+        Validates that `generator_id` and pillar params
+        (sources/strategy/shape/reconciler) aren't both passed (mutually
+        exclusive).
+
+        Today the public API doesn't accept ad-hoc pillar configs in the
+        submit body — Sources/Strategy/Shape/Reconciler must be wrapped
+        in a saved generator (created via the dashboard). The SDK
+        accepts pillar params here and validates them client-side; if
+        you pass them without a `generator_id`, we raise a clear error
+        pointing you at the dashboard. When public generator CRUD ships
+        on the API-key surface, this will switch to auto-create-then-
+        submit transparently.
+        """
+        pillar_args = (sources, strategy, shape, reconciler)
+        has_pillars = any(arg is not None for arg in pillar_args)
+        if generator_id is not None and has_pillars:
+            raise ValueError(
+                "Pass either `generator_id` OR pillar params "
+                "(sources/strategy/shape/reconciler), not both."
+            )
+        if has_pillars:
+            raise NotImplementedError(
+                "Custom Source/Strategy/Shape/Reconciler configs aren't yet "
+                "accepted by the public /v1/context endpoint. Today, custom "
+                "pillars must be wrapped in a saved generator — create one "
+                "in the dashboard (/context page), then pass its "
+                "`generator_id` to crawler.context(). Pillar builders (e.g. "
+                "Source.google_web(...)) are still useful for inspecting and "
+                "serialising configs locally; the SDK will auto-create-and-"
+                "submit transparently once public generator CRUD ships."
+            )
+
+        body: Dict[str, Any] = {"intent": str(intent)}
+        if mission:
+            body["mission"] = str(mission)
+        if generator_id:
+            body["generator_id"] = str(generator_id)
+        if constraints is not None:
+            if isinstance(constraints, ContextConstraints):
+                body["constraints"] = constraints.to_dict()
+            else:
+                body["constraints"] = dict(constraints)
+        if webhook_url:
+            body["webhook_url"] = str(webhook_url)
+        return body
+
     async def context(
         self,
-        query: str,
-        paa_limit: int = 3,
-        results_per_paa: int = 5,
+        intent: Optional[str] = None,
+        *,
+        mission: Optional[str] = None,
+        generator_id: Optional[str] = None,
+        sources: Optional[List[Dict[str, Any]]] = None,
+        strategy: Optional[Dict[str, Any]] = None,
+        shape: Optional[Dict[str, Any]] = None,
+        reconciler: Optional[Dict[str, Any]] = None,
+        constraints: Optional[Union[ContextConstraints, Dict[str, Any]]] = None,
+        webhook_url: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
         wait: bool = True,
+        poll_interval: float = 3.0,
+        timeout: Optional[float] = 600.0,
     ) -> ContextResult:
-        """
-        Build context from a search query.
+        """Submit a Context run.
 
-        Expands query using Google's "People Also Ask" questions and
-        crawls results to build comprehensive context stored in S3.
+        One-liner — uses the user's default generator
+        (`google_web` + `all_items` + `raw` + `noop`):
+
+            result = await crawler.context("compare LangChain and AutoGen")
+            for claim in (await result.output()).claims:
+                print(claim.text, "—", claim.source_url)
+
+        Custom pillars — composability is visible:
+
+            from crawl4ai_cloud import Source, Strategy, Shape, Reconciler
+
+            result = await crawler.context(
+                intent="compare agentic frameworks",
+                sources=[
+                    Source.google_web(backends=["google", "bing"]),
+                    Source.crawl(domain="https://langchain.com", max_urls=30),
+                ],
+                strategy=Strategy.all_items(),
+                shape=Shape.raw(),
+                reconciler=Reconciler.noop(),
+                constraints={"max_items": 20, "max_crawl_time_s": 90},
+                idempotency_key="weekly-watch-2026-W21",
+            )
 
         Args:
-            query: Search query to expand
-            paa_limit: Number of PAA questions to expand (1-10)
-            results_per_paa: Results per PAA search (1-20)
-            wait: If True, wait for completion (default: True)
+            intent: Natural-language goal (1-4000 chars). Required.
+            mission: Extra background context (≤8000 chars).
+            generator_id: Reference a saved generator. Mutually exclusive
+                with pillar params.
+            sources: List of Source configs built via `Source.google_web(...)`,
+                `Source.crawl(...)`, `Source.file(...)`, or
+                `Source.custom(type=..., params={...})`.
+            strategy: Single Strategy config via `Strategy.all_items()` or
+                `Strategy.custom(...)`.
+            shape: Single Shape config via `Shape.raw()` or `Shape.custom(...)`.
+            reconciler: Single Reconciler config via `Reconciler.noop()` or
+                `Reconciler.custom(...)`.
+            constraints: Constraints instance or plain dict
+                (max_items, max_per_source, max_crawl_time_s,
+                freshness_days, language).
+            webhook_url: POST'd to once with the terminal status.
+            idempotency_key: Pass to deduplicate retries within a 24h window.
+            wait: If True (default), stream until terminal status. If False,
+                return immediately after submit.
+            poll_interval: Fallback polling cadence when streaming dies.
+            timeout: Max seconds to wait when `wait=True`.
 
         Returns:
-            ContextResult with download_url for retrieving results
-
-        Example:
-            ```python
-            result = await crawler.context("best database for SaaS")
-            print(f"Crawled {result.urls_crawled} URLs")
-            print(f"Download: {result.download_url}")
-            ```
+            ContextResult with run_id, status, version, stats. Call
+            `await result.output()` to lazy-fetch the ShapedOutput.
         """
-        body: Dict[str, Any] = {
-            "query": query,
-            "strategy": "serper_paa",
-            "paa_limit": paa_limit,
-            "results_per_paa": results_per_paa,
-        }
+        if not intent or not intent.strip():
+            raise ValueError("`intent` is required and must be non-empty")
 
-        data = await self._http.request("POST", "/v1/context", json=body, timeout=300)
-        return ContextResult.from_dict(data)
+        body = self._build_context_body(
+            intent=intent,
+            mission=mission,
+            generator_id=generator_id,
+            sources=sources,
+            strategy=strategy,
+            shape=shape,
+            reconciler=reconciler,
+            constraints=constraints,
+            webhook_url=webhook_url,
+        )
+
+        headers: Dict[str, str] = {}
+        if idempotency_key:
+            headers["Idempotency-Key"] = str(idempotency_key)
+
+        data = await self._http.request(
+            "POST",
+            "/v1/context",
+            json=body,
+            timeout=30.0,
+            headers=headers or None,
+        )
+        # Submit response is {run_id, status, generator_id} — promote to
+        # ContextResult by fetching the full row.
+        run_id = data["run_id"]
+        result = await self.get_context_run(run_id)
+
+        if not wait or result.is_terminal:
+            return result
+
+        return await self._wait_context_run(
+            run_id,
+            poll_interval=poll_interval,
+            timeout=timeout,
+        )
+
+    async def context_stream(
+        self,
+        intent: Optional[str] = None,
+        *,
+        run_id: Optional[str] = None,
+        mission: Optional[str] = None,
+        generator_id: Optional[str] = None,
+        sources: Optional[List[Dict[str, Any]]] = None,
+        strategy: Optional[Dict[str, Any]] = None,
+        shape: Optional[Dict[str, Any]] = None,
+        reconciler: Optional[Dict[str, Any]] = None,
+        constraints: Optional[Union[ContextConstraints, Dict[str, Any]]] = None,
+        webhook_url: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ):
+        """Submit (or attach to) a Context run and yield typed events.
+
+        Two modes:
+
+        1. Submit + stream — pass `intent` (and optional pillar params).
+           Submits the run, opens the SSE stream, yields typed events
+           until terminal.
+
+        2. Attach — pass `run_id` only. Opens the SSE stream on an
+           existing run.
+
+        Yields:
+            ContextEvent — one of StatusEvent, PhaseProgressInit,
+            PhaseProgressItemUpdate, TerminalEvent.
+        """
+        if run_id is None:
+            if not intent:
+                raise ValueError(
+                    "Pass `intent` to submit + stream, or `run_id` to "
+                    "attach to an existing run."
+                )
+            body = self._build_context_body(
+                intent=intent,
+                mission=mission,
+                generator_id=generator_id,
+                sources=sources,
+                strategy=strategy,
+                shape=shape,
+                reconciler=reconciler,
+                constraints=constraints,
+                webhook_url=webhook_url,
+            )
+            headers: Dict[str, str] = {}
+            if idempotency_key:
+                headers["Idempotency-Key"] = str(idempotency_key)
+            submit = await self._http.request(
+                "POST",
+                "/v1/context",
+                json=body,
+                timeout=30.0,
+                headers=headers or None,
+            )
+            run_id = submit["run_id"]
+
+        async for event_type, payload in self._http.stream_sse(
+            f"/v1/context/{run_id}/stream"
+        ):
+            typed = _parse_event(event_type, payload)
+            if typed is not None:
+                yield typed
+                if isinstance(typed, TerminalEvent):
+                    return
+
+    async def _wait_context_run(
+        self,
+        run_id: str,
+        *,
+        poll_interval: float = 3.0,
+        timeout: Optional[float] = 600.0,
+    ) -> ContextResult:
+        """Stream a Context run to terminal. Falls back to polling if the
+        stream dies before terminal."""
+        deadline = (time.monotonic() + timeout) if timeout else None
+        try:
+            async for event in self.context_stream(run_id=run_id):
+                if isinstance(event, TerminalEvent):
+                    break
+                if deadline is not None and time.monotonic() > deadline:
+                    raise TimeoutError(
+                        f"Context run {run_id} did not terminate within "
+                        f"{timeout}s",
+                        408, {}, {},
+                    )
+        except TimeoutError:
+            raise
+        except Exception:
+            # Stream died — fall back to polling for the final state.
+            pass
+
+        # Fetch final state — covers both stream-success and stream-fallback.
+        while True:
+            result = await self.get_context_run(run_id)
+            if result.is_terminal:
+                return result
+            if deadline is not None and time.monotonic() > deadline:
+                raise TimeoutError(
+                    f"Context run {run_id} did not terminate within "
+                    f"{timeout}s",
+                    408, {}, {},
+                )
+            await asyncio.sleep(poll_interval)
+
+    async def get_context_run(self, run_id: str) -> ContextResult:
+        """Fetch the current state of a Context run."""
+        data = await self._http.request("GET", f"/v1/context/{run_id}")
+        return ContextResult.from_api(data, crawler=self)
+
+    async def get_context_output(self, run_id: str) -> ContextOutput:
+        """Fetch the ShapedOutput for a Context run."""
+        data = await self._http.request("GET", f"/v1/context/{run_id}/output")
+        return ContextOutput.from_api(data)
+
+    async def cancel_context_run(self, run_id: str) -> None:
+        """Cancel an in-flight Context run (asynchronous on the server side)."""
+        await self._http.request("DELETE", f"/v1/context/{run_id}")
+
+    async def refresh_context(
+        self,
+        run_id: str,
+        *,
+        wait: bool = True,
+        poll_interval: float = 3.0,
+        timeout: Optional[float] = 600.0,
+    ) -> ContextResult:
+        """Create a new version on the same chain. Re-runs the entire
+        pipeline against the same generator config. Returns the new
+        version's ContextResult.
+
+        Set `wait=False` to return immediately after submit."""
+        data = await self._http.request("POST", f"/v1/context/{run_id}/refresh")
+        new_run_id = data.get("run_id") or run_id
+        result = await self.get_context_run(new_run_id)
+        if not wait or result.is_terminal:
+            return result
+        return await self._wait_context_run(
+            new_run_id, poll_interval=poll_interval, timeout=timeout,
+        )
+
+    async def list_context_versions(self, run_id: str) -> List[ContextVersion]:
+        """List all versions on a Context run's chain (newest last)."""
+        data = await self._http.request("GET", f"/v1/context/{run_id}/versions")
+        return [ContextVersion.from_api(v) for v in (data.get("versions") or [])]
+
+    async def diff_context(
+        self,
+        run_id: str,
+        other_run_id: str,
+    ) -> ContextDiff:
+        """Diff two Context versions. When both ids are on the same chain,
+        diffs the two most recent versions; when they're on different
+        chains, diffs cross-chain."""
+        data = await self._http.request(
+            "GET", f"/v1/context/{run_id}/diff/{other_run_id}",
+        )
+        return ContextDiff.from_api(data)
+
+    async def rollback_context(
+        self,
+        run_id: str,
+        version: int,
+    ) -> ContextResult:
+        """Move the chain's current pointer back to an earlier version.
+        Pointer move, not delete — the newer version stays on the chain
+        and you can roll forward again."""
+        await self._http.request(
+            "POST", f"/v1/context/{run_id}/rollback/{int(version)}",
+        )
+        return await self.get_context_run(run_id)
+
+    async def context_catalog(self) -> ContextCatalog:
+        """Discover what Sources / Strategies / Shapes / Reconcilers are
+        available. Useful for building a generator-creation UI."""
+        async def _fetch(path: str) -> List[CatalogEntry]:
+            try:
+                data = await self._http.request("GET", path)
+            except Exception:
+                return []
+            items = data.get("items") if isinstance(data, dict) else data
+            return [CatalogEntry.from_api(i) for i in (items or [])]
+
+        sources, strategies, shapes, reconcilers = await asyncio.gather(
+            _fetch("/v1/context/sources"),
+            _fetch("/v1/context/strategies"),
+            _fetch("/v1/context/shapes"),
+            _fetch("/v1/context/reconcilers"),
+        )
+        return ContextCatalog(
+            sources=sources,
+            strategies=strategies,
+            shapes=shapes,
+            reconcilers=reconcilers,
+        )
 
     # -------------------------------------------------------------------------
     # Schema Generation

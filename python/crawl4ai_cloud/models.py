@@ -457,41 +457,10 @@ class DeepCrawlResult:
         )
 
 
-@dataclass
-class ContextResult:
-    """Context API response."""
-    job_id: str
-    status: str
-    query: str
-    download_url: str
-    urls_crawled: int
-    size_bytes: int
-    duration_ms: int
-    cached: bool = False
-
-    @property
-    def size_mb(self) -> float:
-        """Size in megabytes."""
-        return self.size_bytes / (1024 * 1024)
-
-    @property
-    def duration_seconds(self) -> float:
-        """Duration in seconds."""
-        return self.duration_ms / 1000
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ContextResult":
-        """Create ContextResult from API response dict."""
-        return cls(
-            job_id=data["job_id"],
-            status=data["status"],
-            query=data["query"],
-            download_url=data["download_url"],
-            size_bytes=data.get("storage_size_bytes", 0),
-            urls_crawled=data.get("urls_crawled", 0),
-            duration_ms=data.get("duration_ms", 0),
-            cached=data.get("cached", False),
-        )
+# NB: the legacy `ContextResult` (PAA-based Context API response) was
+# removed in SDK 1.0.0. Context v2's result type lives in
+# `crawl4ai_cloud.context.ContextResult` and is re-exported from the
+# package root. See `api-docs/guides/context-walkthrough.md`.
 
 
 @dataclass

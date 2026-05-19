@@ -86,6 +86,7 @@ class HTTPClient:
         params: Optional[Dict[str, Any]] = None,
         json: Optional[Dict[str, Any]] = None,
         timeout: Optional[float] = None,
+        headers: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """
         Make HTTP request with error handling and retries.
@@ -120,6 +121,7 @@ class HTTPClient:
                     params=params,
                     json=json,
                     timeout=timeout or self._timeout,
+                    headers=headers,
                 )
 
                 # Success
@@ -132,6 +134,14 @@ class HTTPClient:
                 try:
                     error_data = response.json()
                     detail = error_data.get("detail", str(error_data))
+                    # FastAPI 422 sends a list of validation errors; coerce
+                    # to a single string for downstream consumers that do
+                    # .lower() etc. on the detail.
+                    if not isinstance(detail, str):
+                        try:
+                            detail = json_module.dumps(detail, default=str)
+                        except Exception:
+                            detail = str(detail)
                 except Exception:
                     detail = response.text or f"HTTP {response.status_code}"
                     error_data = {}
@@ -183,6 +193,9 @@ class HTTPClient:
         path: str,
         params: Optional[Dict[str, Any]] = None,
         timeout: Optional[float] = None,
+        method: str = "GET",
+        json: Optional[Dict[str, Any]] = None,
+        extra_headers: Optional[Dict[str, str]] = None,
     ) -> AsyncIterator[Tuple[str, Dict[str, Any]]]:
         """Open an SSE connection and yield (event_type, parsed_data) pairs.
 
@@ -195,9 +208,13 @@ class HTTPClient:
             connect=10.0, read=None, write=10.0, pool=10.0,
         ) if timeout is None else httpx.Timeout(timeout)
 
+        stream_headers = {"Accept": "text/event-stream"}
+        if extra_headers:
+            stream_headers.update(extra_headers)
         async with client.stream(
-            "GET", path, params=params, timeout=request_timeout,
-            headers={"Accept": "text/event-stream"},
+            method, path, params=params, timeout=request_timeout,
+            json=json,
+            headers=stream_headers,
         ) as response:
             if response.status_code >= 400:
                 body = await response.aread()

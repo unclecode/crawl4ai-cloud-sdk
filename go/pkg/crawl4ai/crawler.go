@@ -654,12 +654,6 @@ func (c *AsyncWebCrawler) GetDeepCrawlStatus(jobID string) (*DeepCrawlResult, er
 	return DeepCrawlResultFromMap(data), nil
 }
 
-// ContextOptions are options for Context.
-type ContextOptions struct {
-	PAALimit      int
-	ResultsPerPAA int
-}
-
 // Scan discovers all URLs under a domain without crawling.
 //
 // Two routing strategies (picked by scan.Mode or inferred from Criteria):
@@ -1035,37 +1029,6 @@ func (c *AsyncWebCrawler) ExtractAsync(url string, opts *ExtractAsyncOptions) (*
 		return c.waitWrapperJob(job.JobID, "extract", opts.PollInterval, opts.Timeout)
 	}
 	return job, nil
-}
-
-// Context builds context from a search query.
-func (c *AsyncWebCrawler) Context(query string, opts *ContextOptions) (*ContextResult, error) {
-	if opts == nil {
-		opts = &ContextOptions{}
-	}
-
-	paaLimit := opts.PAALimit
-	if paaLimit == 0 {
-		paaLimit = 3
-	}
-
-	resultsPerPAA := opts.ResultsPerPAA
-	if resultsPerPAA == 0 {
-		resultsPerPAA = 5
-	}
-
-	body := map[string]interface{}{
-		"query":           query,
-		"strategy":        "serper_paa",
-		"paa_limit":       paaLimit,
-		"results_per_paa": resultsPerPAA,
-	}
-
-	data, err := c.http.Post("/v1/context", body, 300*time.Second)
-	if err != nil {
-		return nil, err
-	}
-
-	return ContextResultFromMap(data), nil
 }
 
 // GenerateSchemaOptions are options for GenerateSchema.

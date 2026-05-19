@@ -775,50 +775,6 @@ func StorageUsageFromMap(data map[string]interface{}) *StorageUsage {
 	return usage
 }
 
-// ContextResult represents a context API response.
-type ContextResult struct {
-	JobID       string `json:"job_id"`
-	Status      string `json:"status"`
-	Query       string `json:"query"`
-	DownloadURL string `json:"download_url"`
-	URLsCrawled int    `json:"urls_crawled"`
-	SizeBytes   int    `json:"size_bytes"`
-	DurationMs  int    `json:"duration_ms"`
-	Cached      bool   `json:"cached"`
-}
-
-// ContextResultFromMap creates a ContextResult from API response map.
-func ContextResultFromMap(data map[string]interface{}) *ContextResult {
-	result := &ContextResult{}
-
-	if v, ok := data["job_id"].(string); ok {
-		result.JobID = v
-	}
-	if v, ok := data["status"].(string); ok {
-		result.Status = v
-	}
-	if v, ok := data["query"].(string); ok {
-		result.Query = v
-	}
-	if v, ok := data["download_url"].(string); ok {
-		result.DownloadURL = v
-	}
-	if v, ok := data["urls_crawled"].(float64); ok {
-		result.URLsCrawled = int(v)
-	}
-	if v, ok := data["storage_size_bytes"].(float64); ok {
-		result.SizeBytes = int(v)
-	}
-	if v, ok := data["duration_ms"].(float64); ok {
-		result.DurationMs = int(v)
-	}
-	if v, ok := data["cached"].(bool); ok {
-		result.Cached = v
-	}
-
-	return result
-}
-
 // GeneratedSchema represents a generated extraction schema.
 type GeneratedSchema struct {
 	Success bool                   `json:"success"`

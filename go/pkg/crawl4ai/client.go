@@ -16,7 +16,7 @@ import (
 
 const (
 	// Version is the SDK version.
-	Version = "0.12.0"
+	Version = "1.0.0"
 
 	// DefaultBaseURL is the default API base URL.
 	DefaultBaseURL = "https://api.crawl4ai.com"
@@ -94,6 +94,7 @@ type RequestOptions struct {
 	Params  map[string]string
 	Body    map[string]interface{}
 	Timeout time.Duration
+	Headers map[string]string
 }
 
 // Request makes an HTTP request with retries and error handling.
@@ -143,6 +144,9 @@ func (c *HTTPClient) Request(opts RequestOptions) (map[string]interface{}, error
 		req.Header.Set("X-API-Key", c.apiKey)
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("User-Agent", fmt.Sprintf("crawl4ai-cloud/%s", Version))
+		for k, v := range opts.Headers {
+			req.Header.Set(k, v)
+		}
 
 		// Use custom timeout if provided
 		client := c.client
@@ -190,10 +194,17 @@ func (c *HTTPClient) Request(opts RequestOptions) (map[string]interface{}, error
 			return result, nil
 		}
 
-		// Extract error detail
+		// Extract error detail — FastAPI 422 sends list/dict; coerce so
+		// downstream string ops (strings.Contains etc.) don't blow up.
 		detail := ""
 		if d, ok := result["detail"].(string); ok {
 			detail = d
+		} else if d, ok := result["detail"]; ok && d != nil {
+			if bs, err := json.Marshal(d); err == nil {
+				detail = string(bs)
+			} else {
+				detail = fmt.Sprintf("%v", d)
+			}
 		} else {
 			detail = fmt.Sprintf("HTTP %d", resp.StatusCode)
 		}

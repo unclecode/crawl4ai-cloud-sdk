@@ -1,26 +1,30 @@
 /**
  * Context v2 — the four-pillar research pipeline.
  *
- * Ships:
- * - **Pillar builders** — typed factory methods (`Source.googleWeb(...)`,
- *   `Strategy.allItems()`, `Shape.raw()`, `Reconciler.noop()`) for pillars
- *   that ship today, plus a dict-passthrough escape hatch
- *   (`Source.custom({ type, params })`) for pillars that ship server-side
- *   before this SDK adds a typed builder.
- * - **Result + event types** — `ContextResult` for the run state (with
- *   lazy `output()` fetch), plus typed `StatusEvent`, `PhaseProgressInit`,
- *   `PhaseProgressItemUpdate`, and `TerminalEvent` for the streaming
- *   iterator.
- * - **Constants** — terminal statuses, phase names.
+ * Public surface:
+ * - **Pillar builders** — typed factories for every pillar registered
+ *   server-side:
+ *     Source.googleWeb / googleDrive / gmail / crawl / file / custom
+ *     Strategy.allItems / llmRerank / custom
+ *     Synthesizer.raw / markdown / llm / custom
+ *     Reconciler.noop / custom
+ *   Each returns the API wire shape `{ type, params }`. `Shape` is a
+ *   deprecated alias for `Synthesizer`.
  *
- * The crawler methods (`context()`, `contextStream()`, `refreshContext()`,
- * etc.) live on `AsyncWebCrawler` in `crawler.ts`. This module is the
- * data layer.
+ * - **Result + event types** — `ContextResult` with lazy `output()`,
+ *   `ContextOutput` with shape-specific sugar (`.markdown` for
+ *   markdown-single, `.files` for markdown-multi, `.data` for llm),
+ *   plus typed `StatusEvent` / `PhaseProgressInit` /
+ *   `PhaseProgressItemUpdate` / `TerminalEvent` for the streaming
+ *   iterator.
+ *
+ * The crawler methods (`context()`, `contextStream()`,
+ * `refreshContext()` …) live on `AsyncWebCrawler` in `crawler.ts`.
+ * This module is the pure data layer.
  */
 
 // ─── Constants ──────────────────────────────────────────────────────────
 
-/** Terminal run statuses — stop polling on any of these. */
 export const CONTEXT_TERMINAL_STATUSES = new Set<string>([
   'completed',
   'completed_partial',
@@ -28,10 +32,8 @@ export const CONTEXT_TERMINAL_STATUSES = new Set<string>([
   'cancelled',
 ]);
 
-/** Non-terminal statuses — keep polling. */
 export const CONTEXT_ACTIVE_STATUSES = new Set<string>(['queued', 'running']);
 
-/** Pipeline phases. */
 export const PHASE_PLANNING = 'planning';
 export const PHASE_CRAWLING = 'crawling';
 export const PHASE_SHAPING = 'shaping';
@@ -41,33 +43,30 @@ export const CONTEXT_PHASES = [
   PHASE_SHAPING,
 ] as const;
 
-// ─── Pillar config types ────────────────────────────────────────────────
+// ─── Pillar config ──────────────────────────────────────────────────────
 
-/** Pillar config — the wire shape expected by `/v1/context`. */
+/** Wire shape expected by `/v1/context` for one Source / Strategy /
+ * Synthesizer / Reconciler. */
 export interface PillarConfig {
   type: string;
   params: Record<string, unknown>;
   auth_ref?: string;
 }
 
+// ─── helpers ────────────────────────────────────────────────────────────
+
+function serialize(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value;
+  return JSON.stringify(value);
+}
+
 // ─── Pillar builders ────────────────────────────────────────────────────
 
-/**
- * Builder for Context Source configs.
- *
- * Each method returns a plain object in the shape the API expects:
- * `{ type: "<source_name>", params: {...}, auth_ref?: string }`.
- * Use `Source.custom({ type, params })` for pillars that ship server-side
- * before this SDK adds a typed builder.
- */
+/** Builder for Context Source configs. */
 export class Source {
   /**
    * Google search across multiple SERP backends with RRF merge.
-   *
-   * @param opts.backends - Subset of `["google", "bing", "duckduckgo", "brave"]`.
-   *   Defaults to `["google", "bing"]`.
-   * @param opts.topKPerBackend - Per-backend cap before RRF merge (1-50).
-   * @param opts.region - 2-letter country code (`"us"`, `"gb"`) biasing results.
    */
   static googleWeb(opts: {
     backends?: string[];
@@ -77,18 +76,69 @@ export class Source {
     const params: Record<string, unknown> = {
       top_k_per_backend: Math.trunc(opts.topKPerBackend ?? 10),
     };
-    if (opts.backends !== undefined) {
-      params.backends = [...opts.backends];
-    }
-    if (opts.region !== undefined) {
-      params.region = String(opts.region);
-    }
+    if (opts.backends !== undefined) params.backends = [...opts.backends];
+    if (opts.region !== undefined) params.region = String(opts.region);
     return { type: 'google_web', params };
   }
 
   /**
-   * Recursive site crawl as the corpus.
+   * User's Google Drive. `mode = 'search'` is intent-driven; `mode =
+   * 'folder'` lists one folder (requires `folderId`).
    */
+  static googleDrive(opts: {
+    mode?: 'search' | 'folder';
+    folderId?: string;
+    authRef?: string;
+  } = {}): PillarConfig {
+    const mode = opts.mode ?? 'search';
+    if (mode !== 'search' && mode !== 'folder') {
+      throw new Error(`mode must be 'search' or 'folder', got ${String(mode)}`);
+    }
+    if (mode === 'folder' && !opts.folderId) {
+      throw new Error("folderId is required when mode='folder'");
+    }
+    const out: PillarConfig = {
+      type: 'google_drive',
+      params: { mode, folder_id: String(opts.folderId ?? '') },
+    };
+    if (opts.authRef !== undefined) out.auth_ref = String(opts.authRef);
+    return out;
+  }
+
+  /**
+   * User's Gmail. `mode = 'search'` is intent-driven; `mode = 'label'`
+   * lists threads in one label. Dates are `YYYY/MM/DD`.
+   */
+  static gmail(opts: {
+    mode?: 'search' | 'label';
+    labelId?: string;
+    after?: string;
+    before?: string;
+    includeSpamTrash?: boolean;
+    authRef?: string;
+  } = {}): PillarConfig {
+    const mode = opts.mode ?? 'search';
+    if (mode !== 'search' && mode !== 'label') {
+      throw new Error(`mode must be 'search' or 'label', got ${String(mode)}`);
+    }
+    if (mode === 'label' && !opts.labelId) {
+      throw new Error("labelId is required when mode='label'");
+    }
+    const out: PillarConfig = {
+      type: 'gmail',
+      params: {
+        mode,
+        label_id: String(opts.labelId ?? ''),
+        after: String(opts.after ?? ''),
+        before: String(opts.before ?? ''),
+        include_spam_trash: Boolean(opts.includeSpamTrash ?? false),
+      },
+    };
+    if (opts.authRef !== undefined) out.auth_ref = String(opts.authRef);
+    return out;
+  }
+
+  /** Recursive site crawl as the corpus. */
   static crawl(opts: {
     domain: string;
     maxUrls?: number;
@@ -104,15 +154,11 @@ export class Source {
     if (opts.scoreThreshold !== undefined) {
       params.score_threshold = Number(opts.scoreThreshold);
     }
-    if (opts.profileId !== undefined) {
-      params.profile_id = String(opts.profileId);
-    }
+    if (opts.profileId !== undefined) params.profile_id = String(opts.profileId);
     return { type: 'crawl', params };
   }
 
-  /**
-   * User-uploaded file as the corpus.
-   */
+  /** User-uploaded file as the corpus. */
   static file(opts: {
     fileId: string;
     chunkSize?: number;
@@ -128,11 +174,7 @@ export class Source {
     };
   }
 
-  /**
-   * Escape hatch for Sources that exist server-side but don't yet have a
-   * typed builder in this SDK (e.g. `hackernews`, `github`, `rss` once
-   * they ship). Discover available Sources via `crawler.contextCatalog()`.
-   */
+  /** Escape hatch for Sources without a typed builder yet. */
   static custom(opts: {
     type: string;
     params?: Record<string, unknown>;
@@ -142,47 +184,158 @@ export class Source {
       type: String(opts.type),
       params: { ...(opts.params ?? {}) },
     };
-    if (opts.authRef !== undefined) {
-      out.auth_ref = String(opts.authRef);
-    }
+    if (opts.authRef !== undefined) out.auth_ref = String(opts.authRef);
     return out;
   }
 }
 
 /** Builder for Context Strategy configs. */
 export class Strategy {
-  /** Passthrough — every candidate item is kept up to
-   * `constraints.maxItems`. The default. */
+  /** Passthrough — every candidate kept up to `constraints.maxItems`.
+   * The default. */
   static allItems(): PillarConfig {
     return { type: 'all_items', params: {} };
   }
 
-  /** Escape hatch for Strategies that ship server-side before this SDK
-   * adds a typed builder. */
-  static custom(opts: { type: string; params?: Record<string, unknown> }): PillarConfig {
+  /**
+   * Score every candidate against the intent with an LLM, keep the
+   * top N. `topN = 0` means use the request's `maxItems`.
+   * `contentAware` scores on the item body (for `owns_content`
+   * Sources like Drive / Gmail / HN) instead of just title + snippet.
+   */
+  static llmRerank(opts: {
+    topN?: number;
+    instruction?: string;
+    model?: string;
+    scoreThreshold?: number;
+    batchSize?: number;
+    maxConcurrency?: number;
+    contentAware?: boolean;
+    contentChars?: number;
+  } = {}): PillarConfig {
     return {
-      type: String(opts.type),
-      params: { ...(opts.params ?? {}) },
+      type: 'llm_rerank',
+      params: {
+        top_n: Math.trunc(opts.topN ?? 0),
+        instruction: String(opts.instruction ?? ''),
+        model: String(opts.model ?? 'anthropic/claude-haiku-4-5'),
+        score_threshold: Number(opts.scoreThreshold ?? 0.0),
+        batch_size: Math.trunc(opts.batchSize ?? 20),
+        max_concurrency: Math.trunc(opts.maxConcurrency ?? 4),
+        content_aware: Boolean(opts.contentAware ?? false),
+        content_chars: Math.trunc(opts.contentChars ?? 4000),
+      },
     };
+  }
+
+  /** Escape hatch for Strategies without a typed builder yet. */
+  static custom(opts: { type: string; params?: Record<string, unknown> }): PillarConfig {
+    return { type: String(opts.type), params: { ...(opts.params ?? {}) } };
   }
 }
 
-/** Builder for Context Shape configs. */
-export class Shape {
+/**
+ * Builder for Context Synthesizer configs.
+ *
+ * Previously named "Shape" — that builder is kept as `Shape` for one
+ * release.
+ */
+export class Synthesizer {
   /** Per-item citations with `url` provenance. The default. */
   static raw(): PillarConfig {
     return { type: 'raw', params: {} };
   }
 
-  /** Escape hatch for Shapes that ship server-side before this SDK adds
-   * a typed builder. */
-  static custom(opts: { type: string; params?: Record<string, unknown> }): PillarConfig {
+  /**
+   * Render the materialised plan as markdown.
+   *
+   * `mode = 'single'` — one joined .md body (default).
+   * `mode = 'multi'`  — one .md per item (downloadable as zip).
+   *
+   * When `instruction` is non-empty, each item is rewritten by the
+   * LLM before the markdown is built.
+   */
+  static markdown(opts: {
+    mode?: 'single' | 'multi';
+    instruction?: string;
+    model?: string;
+    batchSize?: number;
+    maxConcurrency?: number;
+    includeMetadata?: boolean;
+    maxCharsPerItem?: number;
+  } = {}): PillarConfig {
+    const mode = opts.mode ?? 'single';
+    if (mode !== 'single' && mode !== 'multi') {
+      throw new Error(`mode must be 'single' or 'multi', got ${String(mode)}`);
+    }
     return {
-      type: String(opts.type),
-      params: { ...(opts.params ?? {}) },
+      type: 'markdown',
+      params: {
+        mode,
+        instruction: String(opts.instruction ?? ''),
+        model: String(opts.model ?? 'anthropic/claude-haiku-4-5'),
+        batch_size: Math.trunc(opts.batchSize ?? 5),
+        max_concurrency: Math.trunc(opts.maxConcurrency ?? 4),
+        include_metadata: Boolean(opts.includeMetadata ?? true),
+        max_chars_per_item: Math.trunc(opts.maxCharsPerItem ?? 20000),
+      },
     };
   }
+
+  /**
+   * One LLM call that fills a caller-defined JSON shape.
+   *
+   * Pass exactly one of:
+   *   - `schema`      — full JSON Schema (used as-is)
+   *   - `example`     — concrete JSON example (walked into schema)
+   *   - `description` — plain-English shape description (LLM drafts schema)
+   *
+   * Object / array args for `schema` / `example` are JSON-serialised.
+   */
+  static llm(opts: {
+    instruction: string;
+    schema?: string | object;
+    example?: string | object | unknown[];
+    description?: string;
+    model?: string;
+    temperature?: number;
+    maxCorpusChars?: number;
+    autoRepair?: boolean;
+  }): PillarConfig {
+    if (!opts.instruction || !opts.instruction.trim()) {
+      throw new Error('instruction is required for Synthesizer.llm');
+    }
+    // `!= undefined` rather than truthiness — caller passing an explicit
+    // empty value is still a value we want to count.
+    const provided = [opts.schema, opts.example, opts.description].filter(
+      (v) => v !== undefined && v !== null,
+    ).length;
+    if (provided !== 1) {
+      throw new Error('Pass exactly one of: schema, example, description');
+    }
+    return {
+      type: 'llm',
+      params: {
+        instruction: String(opts.instruction),
+        output_schema: serialize(opts.schema),
+        output_example: serialize(opts.example),
+        output_description: opts.description ? String(opts.description) : '',
+        model: String(opts.model ?? 'anthropic/claude-haiku-4-5'),
+        temperature: Number(opts.temperature ?? 0.0),
+        max_corpus_chars: Math.trunc(opts.maxCorpusChars ?? 40000),
+        auto_repair: Boolean(opts.autoRepair ?? true),
+      },
+    };
+  }
+
+  /** Escape hatch for Synthesizers without a typed builder yet. */
+  static custom(opts: { type: string; params?: Record<string, unknown> }): PillarConfig {
+    return { type: String(opts.type), params: { ...(opts.params ?? {}) } };
+  }
 }
+
+/** @deprecated Use `Synthesizer`. Kept as alias for one release. */
+export const Shape = Synthesizer;
 
 /** Builder for Context Reconciler configs. */
 export class Reconciler {
@@ -192,25 +345,15 @@ export class Reconciler {
     return { type: 'noop', params: {} };
   }
 
-  /** Escape hatch for Reconcilers that ship server-side before this SDK
-   * adds a typed builder (e.g. `cron`, `event`). */
+  /** Escape hatch for Reconcilers without a typed builder yet
+   * (e.g. `cron`, `webhook`). */
   static custom(opts: { type: string; params?: Record<string, unknown> }): PillarConfig {
-    return {
-      type: String(opts.type),
-      params: { ...(opts.params ?? {}) },
-    };
+    return { type: String(opts.type), params: { ...(opts.params ?? {}) } };
   }
 }
 
 // ─── Constraints ────────────────────────────────────────────────────────
 
-/**
- * Caller-controllable knobs forwarded to the Context pipeline.
- *
- * All fields have sensible defaults that match the API. Pass an instance
- * to `crawler.context({ constraints: ... })` or pass a plain object —
- * both work.
- */
 export class Constraints {
   maxItems = 20;
   maxPerSource = 10;
@@ -252,21 +395,18 @@ export type ConstraintsInput = Constraints | Partial<{
   max_crawl_time_s: number;
   freshness_days: number;
   language: string;
-  // Allow camelCase too — converted at the boundary.
   maxItems: number;
   maxPerSource: number;
   maxCrawlTimeS: number;
   freshnessDays: number;
 }>;
 
-/** Normalize a Constraints instance or a plain object into the wire dict. */
 export function constraintsToDict(c: ConstraintsInput): Record<string, unknown> {
   if (c instanceof Constraints) return c.toDict();
   const raw = c as Record<string, unknown>;
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(raw)) {
     if (v === undefined || v === null) continue;
-    // Pass snake_case keys through; map camelCase aliases.
     const key =
       k === 'maxItems' ? 'max_items' :
       k === 'maxPerSource' ? 'max_per_source' :
@@ -280,18 +420,11 @@ export function constraintsToDict(c: ConstraintsInput): Record<string, unknown> 
 
 // ─── Output types ───────────────────────────────────────────────────────
 
-/**
- * One fetched item — typically one URL the Source query phase surfaced and
- * the fetch phase materialised. For the `raw` Shape, each item is the
- * unit of citation: its `url` + `title` is the provenance, and `content`
- * / `snippet` is what the consumer reads.
- */
 export interface ContextItem {
   url?: string;
   title?: string;
   content?: string;
   snippet?: string;
-  /** The Source that produced this item, e.g. "google_web". */
   source?: string;
   relevance: number;
   metadata: Record<string, unknown>;
@@ -300,8 +433,6 @@ export interface ContextItem {
 }
 
 export function contextItemFromDict(data: Record<string, unknown>): ContextItem {
-  // The raw Shape returns `source_name`; the catalog calls it `source`.
-  // Accept either so we don't break when shapes evolve.
   const src = (data.source ?? data.source_name) as string | undefined;
   return {
     id: data.id as string | undefined,
@@ -316,41 +447,79 @@ export function contextItemFromDict(data: Record<string, unknown>): ContextItem 
   };
 }
 
+/** One per-item markdown file emitted by `Synthesizer.markdown({ mode: 'multi' })`. */
+export interface MarkdownFile {
+  filename: string;
+  markdown: string;
+}
+
 /**
- * The shaped output.
+ * The synthesized output.
  *
- * For the `raw` Shape (today), `items` carries the fetched URLs with
- * content + snippet + source + provenance metadata; each item is the
- * citation unit. For future Shapes (`markdown_digest`, `tabular`,
- * `knowledge_graph`) the top-level structure may differ — `raw` is
- * preserved unmodified at `.raw` so consumers can drop down to it when
- * the typed surface doesn't carry a needed field.
+ * Shape-specific accessors:
+ *   - `raw`      → `items` is the citation list
+ *   - `markdown` → `markdown` (string, single mode) or `files`
+ *                  (MarkdownFile[], multi mode)
+ *   - `llm`      → `data` (the filled object), plus `resolvedSchema`,
+ *                  `notes`, `partialData`
+ *
+ * For every shape, `rawPayload` is the full wire envelope.
  */
 export interface ContextOutput {
   shape: string;
   items: ContextItem[];
   partial: boolean;
-  raw: Record<string, unknown>;
+  rawPayload: Record<string, unknown>;
+
+  // Markdown
+  markdown?: string;
+  files?: MarkdownFile[];
+
+  // LLM
+  data?: unknown;
+  resolvedSchema?: Record<string, unknown>;
+  notes?: string[];
+  partialData?: unknown;
+
+  /** @deprecated Use `rawPayload`. */
+  raw?: Record<string, unknown>;
 }
 
 export function contextOutputFromDict(data: Record<string, unknown>): ContextOutput {
-  // Wire shape today is {"type": "raw", "data": {"items": [...]}}.
-  // `type` may evolve to `shape`, and `data` may be flattened — accept
-  // both for forward compat.
   const shape = (data.shape ?? data.type ?? 'raw') as string;
   const payload =
     typeof data.data === 'object' && data.data !== null
       ? (data.data as Record<string, unknown>)
-      : data;
-  const itemsData = (payload as Record<string, unknown>).items as
-    | Record<string, unknown>[]
-    | undefined;
-  return {
+      : {};
+  const itemsData = (payload.items as Record<string, unknown>[] | undefined) ?? [];
+
+  const out: ContextOutput = {
     shape: String(shape),
-    items: (itemsData ?? []).map(contextItemFromDict),
+    items: itemsData.map(contextItemFromDict),
     partial: Boolean(data.partial ?? false),
+    rawPayload: data,
     raw: data,
   };
+
+  if (shape === 'markdown') {
+    const mode = (payload.mode as string | undefined) ?? 'single';
+    if (mode === 'multi') {
+      const filesRaw = (payload.files as Record<string, unknown>[] | undefined) ?? [];
+      out.files = filesRaw.map((f) => ({
+        filename: String(f.filename ?? ''),
+        markdown: String(f.markdown ?? ''),
+      }));
+    } else {
+      out.markdown = payload.markdown as string | undefined;
+    }
+  } else if (shape === 'llm') {
+    out.data = payload.data;
+    out.resolvedSchema = (payload.resolved_schema as Record<string, unknown>) ?? {};
+    out.notes = (payload.notes as string[]) ?? [];
+    out.partialData = payload.partial;
+  }
+
+  return out;
 }
 
 // ─── Streaming event types ──────────────────────────────────────────────
@@ -401,8 +570,6 @@ export type ContextEvent =
   | PhaseProgressItemUpdate
   | TerminalEvent;
 
-/** Translate a raw SSE `{event, data}` into a typed event. Returns null
- * for unknown event types (forward-compatible). */
 export function parseContextEvent(
   eventType: string,
   data: Record<string, unknown>,
@@ -482,14 +649,6 @@ export function contextVersionFromDict(data: Record<string, unknown>): ContextVe
   };
 }
 
-/**
- * Diff between two Context versions.
- *
- * Today the diff is item-level (matched by stable URL). Future versions
- * may diff at the claim level once a Shape that emits discrete claims
- * (e.g. `markdown_digest`) is wired through. Until then `added` /
- * `removed` / `unchanged` are lists of `ContextItem`.
- */
 export interface ContextDiff {
   added: ContextItem[];
   removed: ContextItem[];
@@ -536,22 +695,14 @@ export function catalogEntryFromDict(data: Record<string, unknown>): CatalogEntr
 export interface ContextCatalog {
   sources: CatalogEntry[];
   strategies: CatalogEntry[];
-  shapes: CatalogEntry[];
+  synthesizers: CatalogEntry[];
   reconcilers: CatalogEntry[];
+  /** @deprecated Use `synthesizers`. */
+  shapes?: CatalogEntry[];
 }
 
 // ─── ContextResult — the run state with lazy output ─────────────────────
 
-/**
- * A Context run's state.
- *
- * `output()` is lazy — call `await result.output()` to fetch the shaped
- * output. The first call hits the API; subsequent calls return the
- * cached value.
- *
- * Refresh / cancel / diff / rollback / list-versions can also be called
- * via the matching crawler methods on the same runId.
- */
 export class ContextResult {
   runId: string;
   status: string;
@@ -565,7 +716,6 @@ export class ContextResult {
   submittedAt?: string;
   completedAt?: string;
 
-  // Set by the crawler when the result is built so output() can lazy-fetch.
   private _crawler?: {
     getContextOutput: (runId: string) => Promise<ContextOutput>;
   };
@@ -607,14 +757,13 @@ export class ContextResult {
     return this.status === 'completed' || this.status === 'completed_partial';
   }
 
-  /** Fetch the shaped output for this run. Cached after the first call;
-   * safe to call multiple times. */
+  /** Fetch the synthesized output. Cached after the first call. */
   async output(): Promise<ContextOutput> {
     if (this._output !== undefined) return this._output;
     if (this._crawler === undefined) {
       throw new Error(
         'ContextResult was built without a crawler reference; ' +
-          'cannot fetch output. Use crawler.getContextOutput(runId).',
+          'use crawler.getContextOutput(runId).',
       );
     }
     this._output = await this._crawler.getContextOutput(this.runId);
@@ -626,29 +775,16 @@ export function contextResultFromDict(
   data: Record<string, unknown>,
   crawler?: { getContextOutput: (runId: string) => Promise<ContextOutput> },
 ): ContextResult {
-  // GET /{run_id} returns the row with `id` as primary key; POST submit
-  // returns `run_id`. Handle both.
   const runId = (data.run_id ?? data.id ?? '') as string;
-
-  // Stats — newer rows surface flat *_ms fields; older API shape used a
-  // nested `stats` dict. Fold both into one dict for callers.
   const stats: Record<string, unknown> = {
     ...((data.stats as Record<string, unknown> | undefined) ?? {}),
   };
   for (const k of [
-    'planning_ms',
-    'crawling_ms',
-    'shaping_ms',
-    'total_ms',
-    'urls_crawled',
-    'urls_failed',
-    'output_size_bytes',
+    'planning_ms', 'crawling_ms', 'shaping_ms', 'total_ms',
+    'urls_crawled', 'urls_failed', 'output_size_bytes',
   ]) {
-    if (data[k] !== undefined && data[k] !== null) {
-      stats[k] = data[k];
-    }
+    if (data[k] !== undefined && data[k] !== null) stats[k] = data[k];
   }
-
   return new ContextResult({
     runId: String(runId),
     status: String(data.status ?? ''),

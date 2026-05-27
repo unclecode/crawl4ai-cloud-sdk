@@ -175,7 +175,8 @@ export {
 export {
   Source,
   Strategy,
-  Shape,
+  Shape,  // deprecated alias for Synthesizer
+  Synthesizer,
   Reconciler,
   Constraints,
   constraintsToDict,
@@ -199,6 +200,7 @@ export type {
   ConstraintsInput,
   ContextItem,
   ContextOutput,
+  MarkdownFile,
   ContextEvent,
   StatusEvent,
   PhaseProgressInit,

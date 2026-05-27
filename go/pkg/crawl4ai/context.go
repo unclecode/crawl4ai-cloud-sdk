@@ -177,6 +177,69 @@ func CustomSource(opts CustomSourceOptions) PillarConfig {
 	return PillarConfig{Type: opts.Type, Params: params, AuthRef: opts.AuthRef}
 }
 
+// GoogleDriveSourceOptions are options for GoogleDriveSource.
+type GoogleDriveSourceOptions struct {
+	Mode     string // "search" (default) or "folder".
+	FolderID string // Required when Mode = "folder".
+	AuthRef  string // OAuth linked-account ref (optional — server uses default link if blank).
+}
+
+// GoogleDriveSource builds a google_drive Source — the user's connected
+// Google Drive. "search" mode is intent-driven; "folder" lists one folder.
+func GoogleDriveSource(opts GoogleDriveSourceOptions) (PillarConfig, error) {
+	mode := opts.Mode
+	if mode == "" {
+		mode = "search"
+	}
+	if mode != "search" && mode != "folder" {
+		return PillarConfig{}, fmt.Errorf("mode must be 'search' or 'folder', got %q", opts.Mode)
+	}
+	if mode == "folder" && opts.FolderID == "" {
+		return PillarConfig{}, fmt.Errorf("FolderID is required when Mode = 'folder'")
+	}
+	return PillarConfig{
+		Type:    "google_drive",
+		Params:  map[string]interface{}{"mode": mode, "folder_id": opts.FolderID},
+		AuthRef: opts.AuthRef,
+	}, nil
+}
+
+// GmailSourceOptions are options for GmailSource.
+type GmailSourceOptions struct {
+	Mode             string // "search" (default) or "label".
+	LabelID          string // Required when Mode = "label".
+	After            string // YYYY/MM/DD lower bound.
+	Before           string // YYYY/MM/DD upper bound.
+	IncludeSpamTrash bool   // Default false.
+	AuthRef          string // OAuth linked-account ref.
+}
+
+// GmailSource builds a gmail Source — the user's connected Gmail. "search"
+// mode is intent-driven; "label" lists threads in one label.
+func GmailSource(opts GmailSourceOptions) (PillarConfig, error) {
+	mode := opts.Mode
+	if mode == "" {
+		mode = "search"
+	}
+	if mode != "search" && mode != "label" {
+		return PillarConfig{}, fmt.Errorf("mode must be 'search' or 'label', got %q", opts.Mode)
+	}
+	if mode == "label" && opts.LabelID == "" {
+		return PillarConfig{}, fmt.Errorf("LabelID is required when Mode = 'label'")
+	}
+	return PillarConfig{
+		Type: "gmail",
+		Params: map[string]interface{}{
+			"mode":               mode,
+			"label_id":           opts.LabelID,
+			"after":              opts.After,
+			"before":             opts.Before,
+			"include_spam_trash": opts.IncludeSpamTrash,
+		},
+		AuthRef: opts.AuthRef,
+	}, nil
+}
+
 // ─── Strategy / Shape / Reconciler builders ─────────────────────────────
 
 // AllItemsStrategy builds the passthrough Strategy — every candidate item
@@ -194,18 +257,217 @@ func CustomStrategy(type_ string, params map[string]interface{}) PillarConfig {
 	return PillarConfig{Type: type_, Params: params}
 }
 
-// RawShape builds the per-item-citation Shape. The default.
-func RawShape() PillarConfig {
+// LLMRerankStrategyOptions are options for LLMRerankStrategy.
+type LLMRerankStrategyOptions struct {
+	TopN           int     // Keep top N. 0 = use request's MaxItems.
+	Instruction    string  // Optional steering directive.
+	Model          string  // Default "anthropic/claude-haiku-4-5".
+	ScoreThreshold float64 // 0-1; drop items below this normalised score. 0 = off.
+	BatchSize      int     // Items per LLM call (default 20).
+	MaxConcurrency int     // Parallel LLM calls in flight (default 4).
+	ContentAware   bool    // Score on item body, not just title+snippet.
+	ContentChars   int     // Per-item content cap when ContentAware (default 4000).
+}
+
+// LLMRerankStrategy builds a llm_rerank Strategy — scores every candidate
+// against the intent with an LLM, keeps the top N.
+func LLMRerankStrategy(opts LLMRerankStrategyOptions) PillarConfig {
+	model := opts.Model
+	if model == "" {
+		model = "anthropic/claude-haiku-4-5"
+	}
+	batchSize := opts.BatchSize
+	if batchSize == 0 {
+		batchSize = 20
+	}
+	maxConc := opts.MaxConcurrency
+	if maxConc == 0 {
+		maxConc = 4
+	}
+	contentChars := opts.ContentChars
+	if contentChars == 0 {
+		contentChars = 4000
+	}
+	return PillarConfig{Type: "llm_rerank", Params: map[string]interface{}{
+		"top_n":            opts.TopN,
+		"instruction":      opts.Instruction,
+		"model":            model,
+		"score_threshold":  opts.ScoreThreshold,
+		"batch_size":       batchSize,
+		"max_concurrency":  maxConc,
+		"content_aware":    opts.ContentAware,
+		"content_chars":    contentChars,
+	}}
+}
+
+// RawSynthesizer builds the per-item-citation Synthesizer. The default.
+//
+// The pillar was previously named "Shape"; RawShape is kept as a
+// deprecated alias for one release.
+func RawSynthesizer() PillarConfig {
 	return PillarConfig{Type: "raw", Params: map[string]interface{}{}}
 }
 
-// CustomShape is the escape hatch for Shapes that ship server-side before
-// this SDK adds a typed builder (e.g. markdown_digest, tabular, knowledge_graph).
-func CustomShape(type_ string, params map[string]interface{}) PillarConfig {
+// RawShape is a deprecated alias for RawSynthesizer.
+//
+// Deprecated: use RawSynthesizer.
+func RawShape() PillarConfig {
+	return RawSynthesizer()
+}
+
+// CustomSynthesizer is the escape hatch for Synthesizers that ship
+// server-side before this SDK adds a typed builder.
+func CustomSynthesizer(type_ string, params map[string]interface{}) PillarConfig {
 	if params == nil {
 		params = map[string]interface{}{}
 	}
 	return PillarConfig{Type: type_, Params: params}
+}
+
+// CustomShape is a deprecated alias for CustomSynthesizer.
+//
+// Deprecated: use CustomSynthesizer.
+func CustomShape(type_ string, params map[string]interface{}) PillarConfig {
+	return CustomSynthesizer(type_, params)
+}
+
+// MarkdownSynthesizerOptions are options for MarkdownSynthesizer.
+type MarkdownSynthesizerOptions struct {
+	Mode             string // "single" (default) or "multi".
+	Instruction      string // Optional LLM rewrite instruction per item.
+	Model            string // Default "anthropic/claude-haiku-4-5".
+	BatchSize        int    // Items per LLM call (default 5).
+	MaxConcurrency   int    // Parallel batches in flight (default 4).
+	IncludeMetadata  *bool  // Default true. Use bool pointer to set false explicitly.
+	MaxCharsPerItem  int    // Per-item content cap (default 20000).
+}
+
+// MarkdownSynthesizer builds a markdown Synthesizer.
+//
+// "single" mode joins every item into one .md body. "multi" mode emits
+// one .md per item (downloadable as zip via the dashboard).
+//
+// When Instruction is non-empty, each item is rewritten by the LLM
+// before the markdown is built.
+func MarkdownSynthesizer(opts MarkdownSynthesizerOptions) (PillarConfig, error) {
+	mode := opts.Mode
+	if mode == "" {
+		mode = "single"
+	}
+	if mode != "single" && mode != "multi" {
+		return PillarConfig{}, fmt.Errorf("mode must be 'single' or 'multi', got %q", opts.Mode)
+	}
+	model := opts.Model
+	if model == "" {
+		model = "anthropic/claude-haiku-4-5"
+	}
+	batchSize := opts.BatchSize
+	if batchSize == 0 {
+		batchSize = 5
+	}
+	maxConc := opts.MaxConcurrency
+	if maxConc == 0 {
+		maxConc = 4
+	}
+	includeMeta := true
+	if opts.IncludeMetadata != nil {
+		includeMeta = *opts.IncludeMetadata
+	}
+	maxChars := opts.MaxCharsPerItem
+	if maxChars == 0 {
+		maxChars = 20000
+	}
+	return PillarConfig{Type: "markdown", Params: map[string]interface{}{
+		"mode":               mode,
+		"instruction":        opts.Instruction,
+		"model":              model,
+		"batch_size":         batchSize,
+		"max_concurrency":    maxConc,
+		"include_metadata":   includeMeta,
+		"max_chars_per_item": maxChars,
+	}}, nil
+}
+
+// LLMSynthesizerOptions are options for LLMSynthesizer.
+//
+// Exactly one of Schema / Example / Description must be set. Dict / slice
+// values for Schema and Example are JSON-marshalled.
+type LLMSynthesizerOptions struct {
+	Instruction     string      // Required. What the LLM should produce.
+	Schema          interface{} // JSON Schema (string OR map/struct).
+	Example         interface{} // Concrete JSON example (string OR any).
+	Description     string      // Plain-English shape description.
+	Model           string      // Default "anthropic/claude-haiku-4-5".
+	Temperature     float64     // Default 0.0.
+	MaxCorpusChars  int         // Default 40000.
+	AutoRepair      *bool       // Default true. Pointer to set false explicitly.
+}
+
+// LLMSynthesizer builds an llm Synthesizer — one LLM call fills a
+// caller-defined JSON shape.
+func LLMSynthesizer(opts LLMSynthesizerOptions) (PillarConfig, error) {
+	if strings.TrimSpace(opts.Instruction) == "" {
+		return PillarConfig{}, fmt.Errorf("Instruction is required for LLMSynthesizer")
+	}
+	set := 0
+	if opts.Schema != nil {
+		set++
+	}
+	if opts.Example != nil {
+		set++
+	}
+	if opts.Description != "" {
+		set++
+	}
+	if set != 1 {
+		return PillarConfig{}, fmt.Errorf("pass exactly one of Schema, Example, Description (got %d)", set)
+	}
+	model := opts.Model
+	if model == "" {
+		model = "anthropic/claude-haiku-4-5"
+	}
+	maxCorpus := opts.MaxCorpusChars
+	if maxCorpus == 0 {
+		maxCorpus = 40000
+	}
+	autoRepair := true
+	if opts.AutoRepair != nil {
+		autoRepair = *opts.AutoRepair
+	}
+
+	ser := func(v interface{}) (string, error) {
+		if v == nil {
+			return "", nil
+		}
+		if s, ok := v.(string); ok {
+			return s, nil
+		}
+		b, err := json.Marshal(v)
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+	}
+
+	schemaStr, err := ser(opts.Schema)
+	if err != nil {
+		return PillarConfig{}, fmt.Errorf("Schema: %w", err)
+	}
+	exampleStr, err := ser(opts.Example)
+	if err != nil {
+		return PillarConfig{}, fmt.Errorf("Example: %w", err)
+	}
+
+	return PillarConfig{Type: "llm", Params: map[string]interface{}{
+		"instruction":        opts.Instruction,
+		"output_schema":      schemaStr,
+		"output_example":     exampleStr,
+		"output_description": opts.Description,
+		"model":              model,
+		"temperature":        opts.Temperature,
+		"max_corpus_chars":   maxCorpus,
+		"auto_repair":        autoRepair,
+	}}, nil
 }
 
 // NoopReconciler builds the no-auto-refresh Reconciler. The default —
@@ -321,22 +583,46 @@ func ContextItemFromMap(data map[string]interface{}) ContextItem {
 	return item
 }
 
-// ContextOutput is the shaped output of a Context run.
+// MarkdownFile is one per-item markdown file emitted by
+// MarkdownSynthesizer when Mode = "multi".
+type MarkdownFile struct {
+	Filename string `json:"filename"`
+	Markdown string `json:"markdown"`
+}
+
+// ContextOutput is the synthesized output of a Context run.
 //
-// For the raw Shape (today), Items carries the fetched URLs with content
-// + snippet + source + provenance metadata; each item is the citation
-// unit. For future Shapes (markdown_digest, tabular, knowledge_graph)
-// the top-level structure may differ — Raw preserves the wire payload
-// for forward compat.
+// Shape-specific accessors:
+//   - "raw"      → Items carries the citation list
+//   - "markdown" → Markdown (string, "single" mode) or Files
+//                  ([]MarkdownFile, "multi" mode)
+//   - "llm"      → Data (the filled object), ResolvedSchema, Notes,
+//                  PartialData
+//
+// For every shape, RawPayload is the full wire envelope. Raw is a
+// deprecated alias for RawPayload kept for one release.
 type ContextOutput struct {
-	Shape   string
-	Items   []ContextItem
-	Partial bool
-	Raw     map[string]interface{}
+	Shape      string
+	Items      []ContextItem
+	Partial    bool
+	RawPayload map[string]interface{}
+
+	// Markdown synthesizer
+	Markdown string         // non-empty only when Shape == "markdown" && mode == "single"
+	Files    []MarkdownFile // non-nil only when Shape == "markdown" && mode == "multi"
+
+	// LLM synthesizer
+	Data            interface{}            // the filled object (nil for other shapes)
+	ResolvedSchema  map[string]interface{} // the schema used for the fill
+	Notes           []string               // synthesizer-emitted notes (e.g. "auto-repair retry succeeded")
+	PartialData     interface{}            // partial parse when validation failed and AutoRepair was off
+
+	// Deprecated: use RawPayload.
+	Raw map[string]interface{}
 }
 
 // ContextOutputFromMap builds a ContextOutput from a wire-shape map.
-// Wire shape today is {"type": "raw", "data": {"items": [...]}}.
+// Wire shape is {"type": <syn>, "data": {...}}.
 func ContextOutputFromMap(data map[string]interface{}) ContextOutput {
 	shape, _ := data["shape"].(string)
 	if shape == "" {
@@ -346,8 +632,13 @@ func ContextOutputFromMap(data map[string]interface{}) ContextOutput {
 		shape = "raw"
 	}
 
+	var payload map[string]interface{}
+	if p, ok := data["data"].(map[string]interface{}); ok {
+		payload = p
+	}
+
 	var itemsData []interface{}
-	if payload, ok := data["data"].(map[string]interface{}); ok {
+	if payload != nil {
 		if items, ok := payload["items"].([]interface{}); ok {
 			itemsData = items
 		}
@@ -367,12 +658,54 @@ func ContextOutputFromMap(data map[string]interface{}) ContextOutput {
 
 	partial, _ := data["partial"].(bool)
 
-	return ContextOutput{
-		Shape:   shape,
-		Items:   items,
-		Partial: partial,
-		Raw:     data,
+	out := ContextOutput{
+		Shape:      shape,
+		Items:      items,
+		Partial:    partial,
+		RawPayload: data,
+		Raw:        data,
 	}
+
+	if payload != nil {
+		switch shape {
+		case "markdown":
+			mode, _ := payload["mode"].(string)
+			if mode == "multi" {
+				if filesRaw, ok := payload["files"].([]interface{}); ok {
+					files := make([]MarkdownFile, 0, len(filesRaw))
+					for _, f := range filesRaw {
+						if m, ok := f.(map[string]interface{}); ok {
+							name, _ := m["filename"].(string)
+							md, _ := m["markdown"].(string)
+							files = append(files, MarkdownFile{Filename: name, Markdown: md})
+						}
+					}
+					out.Files = files
+				}
+			} else {
+				if md, ok := payload["markdown"].(string); ok {
+					out.Markdown = md
+				}
+			}
+		case "llm":
+			out.Data = payload["data"]
+			if rs, ok := payload["resolved_schema"].(map[string]interface{}); ok {
+				out.ResolvedSchema = rs
+			}
+			if notesRaw, ok := payload["notes"].([]interface{}); ok {
+				notes := make([]string, 0, len(notesRaw))
+				for _, n := range notesRaw {
+					if s, ok := n.(string); ok {
+						notes = append(notes, s)
+					}
+				}
+				out.Notes = notes
+			}
+			out.PartialData = payload["partial"]
+		}
+	}
+
+	return out
 }
 
 // ─── Streaming events ───────────────────────────────────────────────────
@@ -629,11 +962,17 @@ func CatalogEntryFromMap(data map[string]interface{}) CatalogEntry {
 }
 
 // ContextCatalog bundles per-pillar catalog responses.
+//
+// Shapes is a deprecated alias for Synthesizers — same slice, kept for
+// one release.
 type ContextCatalog struct {
-	Sources     []CatalogEntry
-	Strategies  []CatalogEntry
-	Shapes      []CatalogEntry
-	Reconcilers []CatalogEntry
+	Sources      []CatalogEntry
+	Strategies   []CatalogEntry
+	Synthesizers []CatalogEntry
+	Reconcilers  []CatalogEntry
+
+	// Deprecated: use Synthesizers.
+	Shapes []CatalogEntry
 }
 
 // ─── ContextResult — the run state with lazy output ─────────────────────
@@ -792,54 +1131,89 @@ func IsContextNotImplementedError(err error) bool {
 // ContextOptions are options for AsyncWebCrawler.Context. The zero value
 // uses the user's default generator (google_web + all_items + raw + noop).
 //
-// Pillar params (Sources/Strategy/Shape/Reconciler) are reserved for the
-// day public generator CRUD ships on the API-key surface. Until then,
-// passing them raises a ContextNotImplementedError pointing at the
-// dashboard.
+// Two pipeline modes:
+//   - GeneratorID — reference a saved generator
+//   - inline pillars — pass Sources / Strategy / Synthesizer / Reconciler
+//     directly; the API runs them as an un-persisted snapshot
+//
+// The two are mutually exclusive.
 type ContextOptions struct {
 	Intent         string
 	Mission        string
 	GeneratorID    string
 	Sources        []PillarConfig
 	Strategy       *PillarConfig
-	Shape          *PillarConfig
+	Synthesizer    *PillarConfig
+	Shape          *PillarConfig // Deprecated: use Synthesizer.
 	Reconciler     *PillarConfig
 	Constraints    *ContextConstraints
 	WebhookURL     string
 	IdempotencyKey string
 
-	// Wait — when true (default), the call streams until terminal then returns.
-	// Use ContextNoWait{} to opt out.
-	Wait         bool
 	NoWait       bool
 	PollInterval time.Duration
 	Timeout      time.Duration
 }
 
+// buildPipeline composes the inline `pipeline` block on POST /v1/context.
+//
+// The API expects Strategy / Synthesizer / Reconciler as flat
+// (name, params) pairs — builders return them nested under a single
+// PillarConfig, so we flatten here.
+func buildPipeline(
+	sources []PillarConfig,
+	strategy, synthesizer, reconciler *PillarConfig,
+) (map[string]interface{}, error) {
+	if len(sources) == 0 {
+		return nil, fmt.Errorf("inline pipeline requires at least one source")
+	}
+	srcs := make([]map[string]interface{}, 0, len(sources))
+	for _, s := range sources {
+		entry := map[string]interface{}{"type": s.Type, "params": s.Params}
+		if s.AuthRef != "" {
+			entry["auth_ref"] = s.AuthRef
+		}
+		srcs = append(srcs, entry)
+	}
+	out := map[string]interface{}{"sources": srcs}
+	if strategy != nil {
+		out["strategy"] = strategy.Type
+		out["strategy_params"] = strategy.Params
+	}
+	if synthesizer != nil {
+		out["synthesizer"] = synthesizer.Type
+		out["synthesizer_params"] = synthesizer.Params
+	}
+	if reconciler != nil {
+		out["reconciler"] = reconciler.Type
+		out["reconciler_params"] = reconciler.Params
+	}
+	return out, nil
+}
+
 func (c *AsyncWebCrawler) buildContextBody(opts ContextOptions) (map[string]interface{}, error) {
+	if opts.Intent == "" || strings.TrimSpace(opts.Intent) == "" {
+		return nil, fmt.Errorf("Intent is required and must be non-empty")
+	}
+
+	// Shape is the deprecated alias for Synthesizer. Prefer the new key.
+	synthesizer := opts.Synthesizer
+	if synthesizer == nil {
+		synthesizer = opts.Shape
+	}
+
 	hasPillars := len(opts.Sources) > 0 || opts.Strategy != nil ||
-		opts.Shape != nil || opts.Reconciler != nil
+		synthesizer != nil || opts.Reconciler != nil
 
 	if opts.GeneratorID != "" && hasPillars {
 		return nil, fmt.Errorf(
-			"pass either GeneratorID OR pillar params (Sources/Strategy/Shape/Reconciler), not both",
+			"pass either GeneratorID OR pillar params (Sources/Strategy/Synthesizer/Reconciler), not both",
 		)
 	}
-	if hasPillars {
-		return nil, &ContextNotImplementedError{
-			Message: "Custom Source/Strategy/Shape/Reconciler configs aren't yet " +
-				"accepted by the public /v1/context endpoint. Today, custom " +
-				"pillars must be wrapped in a saved generator — create one " +
-				"in the dashboard (/context page), then pass its GeneratorID " +
-				"to crawler.Context(). Pillar builders (e.g. GoogleWebSource(...)) " +
-				"are still useful for inspecting and serialising configs locally; " +
-				"the SDK will auto-create-and-submit transparently once public " +
-				"generator CRUD ships.",
-		}
-	}
-
-	if opts.Intent == "" || strings.TrimSpace(opts.Intent) == "" {
-		return nil, fmt.Errorf("Intent is required and must be non-empty")
+	if hasPillars && len(opts.Sources) == 0 {
+		return nil, fmt.Errorf(
+			"inline pipelines must include at least one Source — pass Sources: []PillarConfig{GoogleWebSource(nil), ...}",
+		)
 	}
 
 	body := map[string]interface{}{"intent": opts.Intent}
@@ -848,6 +1222,13 @@ func (c *AsyncWebCrawler) buildContextBody(opts ContextOptions) (map[string]inte
 	}
 	if opts.GeneratorID != "" {
 		body["generator_id"] = opts.GeneratorID
+	}
+	if hasPillars {
+		pipeline, err := buildPipeline(opts.Sources, opts.Strategy, synthesizer, opts.Reconciler)
+		if err != nil {
+			return nil, err
+		}
+		body["pipeline"] = pipeline
 	}
 	if opts.Constraints != nil {
 		body["constraints"] = opts.Constraints.ToMap()
@@ -939,7 +1320,8 @@ type ContextStreamOptions struct {
 	GeneratorID    string
 	Sources        []PillarConfig
 	Strategy       *PillarConfig
-	Shape          *PillarConfig
+	Synthesizer    *PillarConfig
+	Shape          *PillarConfig // Deprecated: use Synthesizer.
 	Reconciler     *PillarConfig
 	Constraints    *ContextConstraints
 	WebhookURL     string
@@ -960,6 +1342,7 @@ func (c *AsyncWebCrawler) ContextStream(ctx context.Context, opts ContextStreamO
 			GeneratorID: opts.GeneratorID,
 			Sources:     opts.Sources,
 			Strategy:    opts.Strategy,
+			Synthesizer: opts.Synthesizer,
 			Shape:       opts.Shape,
 			Reconciler:  opts.Reconciler,
 			Constraints: opts.Constraints,
@@ -1176,10 +1559,12 @@ func (c *AsyncWebCrawler) ContextCatalog() (ContextCatalog, error) {
 		}
 		return out
 	}
+	synthesizers := fetch("/v1/context/synthesizers")
 	return ContextCatalog{
-		Sources:     fetch("/v1/context/sources"),
-		Strategies:  fetch("/v1/context/strategies"),
-		Shapes:      fetch("/v1/context/shapes"),
-		Reconcilers: fetch("/v1/context/reconcilers"),
+		Sources:      fetch("/v1/context/sources"),
+		Strategies:   fetch("/v1/context/strategies"),
+		Synthesizers: synthesizers,
+		Shapes:       synthesizers,
+		Reconcilers:  fetch("/v1/context/reconcilers"),
 	}, nil
 }

@@ -110,13 +110,15 @@ from .context import (
     # Pillar builders
     Source,
     Strategy,
-    Shape,
+    Shape,  # back-compat alias for Synthesizer
+    Synthesizer,
     Reconciler,
     # Knobs
     Constraints,
     # Output types
     ContextItem,
     ContextOutput,
+    MarkdownFile,
     # Result + events
     ContextResult,
     StatusEvent,
@@ -178,9 +180,9 @@ __all__ = [
     "EnrichEvent",
     "ENRICH_TERMINAL_STATUSES", "ENRICH_PAUSED_STATUSES",
     # Context v2 — four-pillar pipeline
-    "Source", "Strategy", "Shape", "Reconciler",
+    "Source", "Strategy", "Shape", "Synthesizer", "Reconciler",
     "Constraints",
-    "ContextItem", "ContextOutput",
+    "ContextItem", "ContextOutput", "MarkdownFile",
     "ContextResult",
     "StatusEvent", "PhaseProgressInit", "PhaseProgressItemUpdate", "TerminalEvent",
     "ContextEvent",

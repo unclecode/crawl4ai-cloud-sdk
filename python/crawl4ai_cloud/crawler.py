@@ -72,6 +72,51 @@ def _normalize_feature(item: Union[str, Dict[str, Any]]) -> Dict[str, Any]:
     return item
 
 
+# ─── Context pipeline body builder ───────────────────────────────────────
+
+
+def _split_pillar(cfg: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
+    """Split a builder dict (``{"type": ..., "params": {...}}``) into
+    (name, params) — the wire shape inline pipelines expect on the API."""
+    if not isinstance(cfg, dict) or "type" not in cfg:
+        raise ValueError(
+            "pillar must be a dict produced by Strategy/Synthesizer/Reconciler "
+            f"builders (got {cfg!r})"
+        )
+    return str(cfg["type"]), dict(cfg.get("params") or {})
+
+
+def _build_pipeline(
+    *,
+    sources: Optional[List[Dict[str, Any]]],
+    strategy: Optional[Dict[str, Any]],
+    synthesizer: Optional[Dict[str, Any]],
+    reconciler: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Compose the ``pipeline`` block on POST /v1/context.
+
+    The API expects ``strategy`` / ``synthesizer`` / ``reconciler`` as
+    flat ``(name, params)`` pairs — builders return them nested under a
+    single ``{type, params}`` dict, so we flatten here.
+    """
+    if not sources:
+        raise ValueError("inline pipeline requires at least one source")
+    out: Dict[str, Any] = {"sources": [dict(s) for s in sources]}
+    if strategy is not None:
+        name, params = _split_pillar(strategy)
+        out["strategy"] = name
+        out["strategy_params"] = params
+    if synthesizer is not None:
+        name, params = _split_pillar(synthesizer)
+        out["synthesizer"] = name
+        out["synthesizer_params"] = params
+    if reconciler is not None:
+        name, params = _split_pillar(reconciler)
+        out["reconciler"] = name
+        out["reconciler_params"] = params
+    return out
+
+
 class AsyncWebCrawler:
     """
     Async client for Crawl4AI Cloud API.
@@ -1120,43 +1165,39 @@ class AsyncWebCrawler:
         generator_id: Optional[str] = None,
         sources: Optional[List[Dict[str, Any]]] = None,
         strategy: Optional[Dict[str, Any]] = None,
-        shape: Optional[Dict[str, Any]] = None,
+        synthesizer: Optional[Dict[str, Any]] = None,
+        shape: Optional[Dict[str, Any]] = None,  # deprecated alias
         reconciler: Optional[Dict[str, Any]] = None,
         constraints: Optional[Union[ContextConstraints, Dict[str, Any]]] = None,
         webhook_url: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Compose the POST /v1/context body.
 
-        Validates that `generator_id` and pillar params
-        (sources/strategy/shape/reconciler) aren't both passed (mutually
-        exclusive).
+        Two pipeline modes:
 
-        Today the public API doesn't accept ad-hoc pillar configs in the
-        submit body — Sources/Strategy/Shape/Reconciler must be wrapped
-        in a saved generator (created via the dashboard). The SDK
-        accepts pillar params here and validates them client-side; if
-        you pass them without a `generator_id`, we raise a clear error
-        pointing you at the dashboard. When public generator CRUD ships
-        on the API-key surface, this will switch to auto-create-then-
-        submit transparently.
+        * ``generator_id`` — reference a saved generator
+        * inline pillars — pass ``sources``/``strategy``/``synthesizer``/
+          ``reconciler`` directly; the API runs them as an un-persisted
+          snapshot
+
+        The two are mutually exclusive. If neither is set, the user's
+        default generator is used.
         """
-        pillar_args = (sources, strategy, shape, reconciler)
+        # `shape` is the deprecated alias for `synthesizer`. Prefer the new key.
+        if shape is not None and synthesizer is None:
+            synthesizer = shape
+
+        pillar_args = (sources, strategy, synthesizer, reconciler)
         has_pillars = any(arg is not None for arg in pillar_args)
         if generator_id is not None and has_pillars:
             raise ValueError(
                 "Pass either `generator_id` OR pillar params "
-                "(sources/strategy/shape/reconciler), not both."
+                "(sources/strategy/synthesizer/reconciler), not both."
             )
-        if has_pillars:
-            raise NotImplementedError(
-                "Custom Source/Strategy/Shape/Reconciler configs aren't yet "
-                "accepted by the public /v1/context endpoint. Today, custom "
-                "pillars must be wrapped in a saved generator — create one "
-                "in the dashboard (/context page), then pass its "
-                "`generator_id` to crawler.context(). Pillar builders (e.g. "
-                "Source.google_web(...)) are still useful for inspecting and "
-                "serialising configs locally; the SDK will auto-create-and-"
-                "submit transparently once public generator CRUD ships."
+        if has_pillars and not sources:
+            raise ValueError(
+                "Inline pipelines must include at least one Source — "
+                "pass `sources=[Source.google_web(), ...]`."
             )
 
         body: Dict[str, Any] = {"intent": str(intent)}
@@ -1164,6 +1205,13 @@ class AsyncWebCrawler:
             body["mission"] = str(mission)
         if generator_id:
             body["generator_id"] = str(generator_id)
+        if has_pillars:
+            body["pipeline"] = _build_pipeline(
+                sources=sources,
+                strategy=strategy,
+                synthesizer=synthesizer,
+                reconciler=reconciler,
+            )
         if constraints is not None:
             if isinstance(constraints, ContextConstraints):
                 body["constraints"] = constraints.to_dict()
@@ -1181,7 +1229,8 @@ class AsyncWebCrawler:
         generator_id: Optional[str] = None,
         sources: Optional[List[Dict[str, Any]]] = None,
         strategy: Optional[Dict[str, Any]] = None,
-        shape: Optional[Dict[str, Any]] = None,
+        synthesizer: Optional[Dict[str, Any]] = None,
+        shape: Optional[Dict[str, Any]] = None,  # deprecated alias for `synthesizer`
         reconciler: Optional[Dict[str, Any]] = None,
         constraints: Optional[Union[ContextConstraints, Dict[str, Any]]] = None,
         webhook_url: Optional[str] = None,
@@ -1192,16 +1241,17 @@ class AsyncWebCrawler:
     ) -> ContextResult:
         """Submit a Context run.
 
-        One-liner — uses the user's default generator
-        (`google_web` + `all_items` + `raw` + `noop`):
+        One-liner — the user's default generator
+        (``google_web`` + ``all_items`` + ``raw`` + ``noop``)::
 
             result = await crawler.context("compare LangChain and AutoGen")
-            for claim in (await result.output()).claims:
-                print(claim.text, "—", claim.source_url)
+            out = await result.output()
+            for item in out.items:
+                print(item.title, "—", item.url)
 
-        Custom pillars — composability is visible:
+        Inline pillars — full composability, nothing saved server-side::
 
-            from crawl4ai_cloud import Source, Strategy, Shape, Reconciler
+            from crawl4ai_cloud import Source, Strategy, Synthesizer, Reconciler
 
             result = await crawler.context(
                 intent="compare agentic frameworks",
@@ -1209,8 +1259,8 @@ class AsyncWebCrawler:
                     Source.google_web(backends=["google", "bing"]),
                     Source.crawl(domain="https://langchain.com", max_urls=30),
                 ],
-                strategy=Strategy.all_items(),
-                shape=Shape.raw(),
+                strategy=Strategy.llm_rerank(top_n=5),
+                synthesizer=Synthesizer.markdown(mode="single"),
                 reconciler=Reconciler.noop(),
                 constraints={"max_items": 20, "max_crawl_time_s": 90},
                 idempotency_key="weekly-watch-2026-W21",
@@ -1220,28 +1270,28 @@ class AsyncWebCrawler:
             intent: Natural-language goal (1-4000 chars). Required.
             mission: Extra background context (≤8000 chars).
             generator_id: Reference a saved generator. Mutually exclusive
-                with pillar params.
-            sources: List of Source configs built via `Source.google_web(...)`,
-                `Source.crawl(...)`, `Source.file(...)`, or
-                `Source.custom(type=..., params={...})`.
-            strategy: Single Strategy config via `Strategy.all_items()` or
-                `Strategy.custom(...)`.
-            shape: Single Shape config via `Shape.raw()` or `Shape.custom(...)`.
-            reconciler: Single Reconciler config via `Reconciler.noop()` or
-                `Reconciler.custom(...)`.
-            constraints: Constraints instance or plain dict
-                (max_items, max_per_source, max_crawl_time_s,
-                freshness_days, language).
-            webhook_url: POST'd to once with the terminal status.
-            idempotency_key: Pass to deduplicate retries within a 24h window.
-            wait: If True (default), stream until terminal status. If False,
-                return immediately after submit.
-            poll_interval: Fallback polling cadence when streaming dies.
-            timeout: Max seconds to wait when `wait=True`.
+                with inline pillars.
+            sources: List of Source builder dicts (``Source.google_web``,
+                ``Source.google_drive``, ``Source.gmail``, ``Source.crawl``,
+                ``Source.file``, or ``Source.custom``).
+            strategy: Strategy builder dict (``Strategy.all_items``,
+                ``Strategy.llm_rerank``, ``Strategy.custom``).
+            synthesizer: Synthesizer builder dict (``Synthesizer.raw``,
+                ``Synthesizer.markdown``, ``Synthesizer.llm``,
+                ``Synthesizer.custom``).
+            shape: Deprecated alias for ``synthesizer``.
+            reconciler: Reconciler builder dict (``Reconciler.noop``,
+                ``Reconciler.custom``).
+            constraints: Constraints instance or plain dict.
+            webhook_url: POSTed once with the terminal status.
+            idempotency_key: Deduplicate retries within a 24h window.
+            wait: If True (default), stream until terminal status.
+            poll_interval: Fallback polling cadence when the stream dies.
+            timeout: Max seconds to wait when ``wait=True``.
 
         Returns:
-            ContextResult with run_id, status, version, stats. Call
-            `await result.output()` to lazy-fetch the ShapedOutput.
+            :class:`ContextResult` — call ``await result.output()`` to
+            lazy-fetch the synthesized output.
         """
         if not intent or not intent.strip():
             raise ValueError("`intent` is required and must be non-empty")
@@ -1252,6 +1302,7 @@ class AsyncWebCrawler:
             generator_id=generator_id,
             sources=sources,
             strategy=strategy,
+            synthesizer=synthesizer,
             shape=shape,
             reconciler=reconciler,
             constraints=constraints,
@@ -1292,7 +1343,8 @@ class AsyncWebCrawler:
         generator_id: Optional[str] = None,
         sources: Optional[List[Dict[str, Any]]] = None,
         strategy: Optional[Dict[str, Any]] = None,
-        shape: Optional[Dict[str, Any]] = None,
+        synthesizer: Optional[Dict[str, Any]] = None,
+        shape: Optional[Dict[str, Any]] = None,  # deprecated alias
         reconciler: Optional[Dict[str, Any]] = None,
         constraints: Optional[Union[ContextConstraints, Dict[str, Any]]] = None,
         webhook_url: Optional[str] = None,
@@ -1325,6 +1377,7 @@ class AsyncWebCrawler:
                 generator_id=generator_id,
                 sources=sources,
                 strategy=strategy,
+                synthesizer=synthesizer,
                 shape=shape,
                 reconciler=reconciler,
                 constraints=constraints,
@@ -1458,8 +1511,8 @@ class AsyncWebCrawler:
         return await self.get_context_run(run_id)
 
     async def context_catalog(self) -> ContextCatalog:
-        """Discover what Sources / Strategies / Shapes / Reconcilers are
-        available. Useful for building a generator-creation UI."""
+        """Discover what Sources / Strategies / Synthesizers / Reconcilers
+        are available. Useful for building a generator-creation UI."""
         async def _fetch(path: str) -> List[CatalogEntry]:
             try:
                 data = await self._http.request("GET", path)
@@ -1468,16 +1521,16 @@ class AsyncWebCrawler:
             items = data.get("items") if isinstance(data, dict) else data
             return [CatalogEntry.from_api(i) for i in (items or [])]
 
-        sources, strategies, shapes, reconcilers = await asyncio.gather(
+        sources, strategies, synthesizers, reconcilers = await asyncio.gather(
             _fetch("/v1/context/sources"),
             _fetch("/v1/context/strategies"),
-            _fetch("/v1/context/shapes"),
+            _fetch("/v1/context/synthesizers"),
             _fetch("/v1/context/reconcilers"),
         )
         return ContextCatalog(
             sources=sources,
             strategies=strategies,
-            shapes=shapes,
+            synthesizers=synthesizers,
             reconcilers=reconcilers,
         )
 

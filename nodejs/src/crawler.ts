@@ -3,7 +3,7 @@
  */
 
 import { HTTPClient } from './client';
-import { TimeoutError, ContextNotImplementedError } from './errors';
+import { TimeoutError } from './errors';
 import {
   CrawlResult,
   CrawlJob,
@@ -103,6 +103,50 @@ import {
   CatalogEntry,
   catalogEntryFromDict,
 } from './context';
+
+
+// ─── Context pipeline body builder ───────────────────────────────────────
+
+function splitPillar(cfg: PillarConfig): { name: string; params: Record<string, unknown> } {
+  if (cfg === null || typeof cfg !== 'object' || typeof cfg.type !== 'string') {
+    throw new Error(
+      'pillar must be a builder dict produced by Strategy/Synthesizer/Reconciler ' +
+        `(got ${JSON.stringify(cfg)})`,
+    );
+  }
+  return { name: cfg.type, params: { ...(cfg.params ?? {}) } };
+}
+
+function buildPipeline(args: {
+  sources: PillarConfig[];
+  strategy?: PillarConfig;
+  synthesizer?: PillarConfig;
+  reconciler?: PillarConfig;
+}): Record<string, unknown> {
+  if (!args.sources || args.sources.length === 0) {
+    throw new Error('inline pipeline requires at least one source');
+  }
+  const out: Record<string, unknown> = {
+    sources: args.sources.map((s) => ({ ...s })),
+  };
+  if (args.strategy !== undefined) {
+    const { name, params } = splitPillar(args.strategy);
+    out.strategy = name;
+    out.strategy_params = params;
+  }
+  if (args.synthesizer !== undefined) {
+    const { name, params } = splitPillar(args.synthesizer);
+    out.synthesizer = name;
+    out.synthesizer_params = params;
+  }
+  if (args.reconciler !== undefined) {
+    const { name, params } = splitPillar(args.reconciler);
+    out.reconciler = name;
+    out.reconciler_params = params;
+  }
+  return out;
+}
+
 
 export interface AsyncWebCrawlerOptions {
   apiKey?: string;
@@ -978,10 +1022,15 @@ export class AsyncWebCrawler {
   // walkthrough at /docs/guides/context-walkthrough for the worked example.
 
   /**
-   * Compose the POST /v1/context body. Validates that `generatorId` and
-   * pillar params (sources / strategy / shape / reconciler) aren't both
-   * passed (mutually exclusive). Until public generator CRUD ships, ad-hoc
-   * pillar configs raise a clear error pointing at the dashboard.
+   * Compose the POST /v1/context body.
+   *
+   * Two pipeline modes:
+   *   - `generatorId` — reference a saved generator
+   *   - inline pillars — pass `sources` / `strategy` / `synthesizer` /
+   *     `reconciler` directly; the API runs them as an un-persisted snapshot
+   *
+   * The two are mutually exclusive. If neither is set, the user's
+   * default generator is used.
    */
   private _buildContextBody(args: {
     intent: string;
@@ -989,39 +1038,45 @@ export class AsyncWebCrawler {
     generatorId?: string;
     sources?: PillarConfig[];
     strategy?: PillarConfig;
+    synthesizer?: PillarConfig;
     shape?: PillarConfig;
     reconciler?: PillarConfig;
     constraints?: ConstraintsInput;
     webhookUrl?: string;
   }): Record<string, unknown> {
+    // `shape` is the deprecated alias for `synthesizer`. Prefer the new key.
+    const synthesizer = args.synthesizer ?? args.shape;
+
     const hasPillars =
       args.sources !== undefined ||
       args.strategy !== undefined ||
-      args.shape !== undefined ||
+      synthesizer !== undefined ||
       args.reconciler !== undefined;
 
     if (args.generatorId !== undefined && hasPillars) {
       throw new Error(
         'Pass either `generatorId` OR pillar params ' +
-          '(sources/strategy/shape/reconciler), not both.',
+          '(sources/strategy/synthesizer/reconciler), not both.',
       );
     }
-    if (hasPillars) {
-      throw new ContextNotImplementedError(
-        "Custom Source/Strategy/Shape/Reconciler configs aren't yet " +
-          'accepted by the public /v1/context endpoint. Today, custom ' +
-          'pillars must be wrapped in a saved generator — create one ' +
-          'in the dashboard (/context page), then pass its `generatorId` ' +
-          'to crawler.context(). Pillar builders (e.g. Source.googleWeb(...)) ' +
-          'are still useful for inspecting and serialising configs locally; ' +
-          'the SDK will auto-create-and-submit transparently once public ' +
-          'generator CRUD ships.',
+    if (hasPillars && (!args.sources || args.sources.length === 0)) {
+      throw new Error(
+        'Inline pipelines must include at least one Source — ' +
+          'pass `sources: [Source.googleWeb(), ...]`.',
       );
     }
 
     const body: Record<string, unknown> = { intent: String(args.intent) };
     if (args.mission) body.mission = String(args.mission);
     if (args.generatorId) body.generator_id = String(args.generatorId);
+    if (hasPillars) {
+      body.pipeline = buildPipeline({
+        sources: args.sources!,
+        strategy: args.strategy,
+        synthesizer,
+        reconciler: args.reconciler,
+      });
+    }
     if (args.constraints !== undefined) {
       body.constraints = constraintsToDict(args.constraints);
     }
@@ -1054,6 +1109,8 @@ export class AsyncWebCrawler {
     generatorId?: string;
     sources?: PillarConfig[];
     strategy?: PillarConfig;
+    synthesizer?: PillarConfig;
+    /** @deprecated Use `synthesizer`. */
     shape?: PillarConfig;
     reconciler?: PillarConfig;
     constraints?: ConstraintsInput;
@@ -1104,6 +1161,8 @@ export class AsyncWebCrawler {
     generatorId?: string;
     sources?: PillarConfig[];
     strategy?: PillarConfig;
+    synthesizer?: PillarConfig;
+    /** @deprecated Use `synthesizer`. */
     shape?: PillarConfig;
     reconciler?: PillarConfig;
     constraints?: ConstraintsInput;
@@ -1123,6 +1182,7 @@ export class AsyncWebCrawler {
         generatorId: opts.generatorId,
         sources: opts.sources,
         strategy: opts.strategy,
+        synthesizer: opts.synthesizer,
         shape: opts.shape,
         reconciler: opts.reconciler,
         constraints: opts.constraints,
@@ -1260,7 +1320,7 @@ export class AsyncWebCrawler {
   }
 
   /**
-   * Discover what Sources / Strategies / Shapes / Reconcilers are
+   * Discover what Sources / Strategies / Synthesizers / Reconcilers are
    * available. Useful for building a generator-creation UI.
    */
   async contextCatalog(): Promise<ContextCatalog> {
@@ -1275,13 +1335,13 @@ export class AsyncWebCrawler {
         return [];
       }
     };
-    const [sources, strategies, shapes, reconcilers] = await Promise.all([
+    const [sources, strategies, synthesizers, reconcilers] = await Promise.all([
       fetchOne('/v1/context/sources'),
       fetchOne('/v1/context/strategies'),
-      fetchOne('/v1/context/shapes'),
+      fetchOne('/v1/context/synthesizers'),
       fetchOne('/v1/context/reconcilers'),
     ]);
-    return { sources, strategies, shapes, reconcilers };
+    return { sources, strategies, synthesizers, reconcilers, shapes: synthesizers };
   }
 
   // -------------------------------------------------------------------------

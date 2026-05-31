@@ -1415,40 +1415,24 @@ func (c *AsyncWebCrawler) CrawlSite(_ string, _ *SiteCrawlOptions) (*SiteCrawlRe
 }
 
 
-// GetSiteCrawlJob polls a site crawl job started via CrawlSite(). This is the
-// unified polling endpoint — it merges the scan phase (URL discovery) and the
-// crawl phase (per-page fetch + extract) into one response. Phase walks
-// through "scan" → "crawl" → "done".
-func (c *AsyncWebCrawler) GetSiteCrawlJob(jobID string) (*SiteCrawlJobStatus, error) {
-	data, err := c.http.Get(fmt.Sprintf("/v1/crawl/site/jobs/%s", jobID), nil)
-	if err != nil {
-		return nil, err
-	}
-	return unmarshalWrapper[SiteCrawlJobStatus](data)
+// GetSiteCrawlJob is DEPRECATED. The /v1/crawl/site endpoint family was
+// removed (paired with the CrawlSite removal). Returns an error instead
+// of silently 404'ing against a removed endpoint. Use
+// AsyncWebCrawler.GetSiteJob(jobID) which polls /v1/site/jobs/{id}.
+func (c *AsyncWebCrawler) GetSiteCrawlJob(_ string) (*SiteCrawlJobStatus, error) {
+	return nil, fmt.Errorf(
+		"GetSiteCrawlJob: the /v1/crawl/site/jobs/{id} endpoint was removed " +
+			"(paired with the CrawlSite removal). Use GetSiteJob(jobID) which " +
+			"polls /v1/site/jobs/{id}",
+	)
 }
 
-// waitSiteCrawlJob polls /v1/crawl/site/jobs/{id} until the crawl finishes.
-func (c *AsyncWebCrawler) waitSiteCrawlJob(jobID string, pollInterval, timeout time.Duration) (*SiteCrawlJobStatus, error) {
-	if pollInterval == 0 {
-		pollInterval = 5 * time.Second
-	}
-	start := time.Now()
-	for {
-		job, err := c.GetSiteCrawlJob(jobID)
-		if err != nil {
-			return nil, err
-		}
-		if job.IsComplete() {
-			return job, nil
-		}
-		if timeout > 0 && time.Since(start) > timeout {
-			return nil, NewTimeoutError(fmt.Sprintf(
-				"timeout waiting for site crawl %s. Phase: %s, crawled: %d/%d",
-				jobID, job.Phase, job.Progress.UrlsCrawled, job.Progress.Total,
-			))
-		}
-		time.Sleep(pollInterval)
-	}
+// waitSiteCrawlJob is DEPRECATED — same removal as GetSiteCrawlJob.
+func (c *AsyncWebCrawler) waitSiteCrawlJob(_ string, _, _ time.Duration) (*SiteCrawlJobStatus, error) {
+	return nil, fmt.Errorf(
+		"waitSiteCrawlJob relies on the removed /v1/crawl/site/jobs/{id} " +
+			"endpoint. Switch to Site() / WaitSiteJob() (the /v1/site path)",
+	)
 }
 
 // =========================================================================

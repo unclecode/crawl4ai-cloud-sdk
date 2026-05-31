@@ -1661,34 +1661,29 @@ export class AsyncWebCrawler {
   }
 
   /**
-   * Poll a site crawl job started via `crawlSite()`.
-   *
-   * This is the unified polling endpoint — it merges the scan phase (URL
-   * discovery) and the crawl phase (per-page fetch + extract) into one
-   * response. `phase` walks through "scan" → "crawl" → "done".
+   * @deprecated The /v1/crawl/site endpoint family was removed. Use
+   *   `crawler.site()` instead, which exposes both the scan and traverse
+   *   phases under /v1/site, and `crawler.getSiteJob(jobId)` for polling.
+   *   This method now throws to match `crawlSite()`'s ValueError behavior
+   *   instead of silently hitting a removed endpoint and returning 404.
    */
-  async getSiteCrawlJob(jobId: string): Promise<SiteCrawlJobStatus> {
-    const data = await this.http.get(`/v1/crawl/site/jobs/${jobId}`);
-    return siteCrawlJobStatusFromDict(data);
+  async getSiteCrawlJob(_jobId: string): Promise<SiteCrawlJobStatus> {
+    throw new Error(
+      "crawler.getSiteCrawlJob() — the /v1/crawl/site/jobs/{id} endpoint " +
+        "was removed (paired with the crawl_site removal). Use " +
+        "crawler.getSiteJob(jobId) which polls /v1/site/jobs/{id}.",
+    );
   }
 
   private async waitSiteCrawlJob(
-    jobId: string,
-    pollInterval: number = 5.0,
-    timeout?: number,
+    _jobId: string,
+    _pollInterval: number = 5.0,
+    _timeout?: number,
   ): Promise<SiteCrawlJobStatus> {
-    const start = Date.now();
-    while (true) {
-      const job = await this.getSiteCrawlJob(jobId);
-      if (isSiteCrawlJobComplete(job)) return job;
-      if (timeout && Date.now() - start > timeout * 1000) {
-        throw new TimeoutError(
-          `Timeout waiting for site crawl ${jobId}. ` +
-            `Phase: ${job.phase}, crawled: ${job.progress.urlsCrawled}/${job.progress.total}`,
-        );
-      }
-      await this.sleep(pollInterval * 1000);
-    }
+    throw new Error(
+      "waitSiteCrawlJob() relies on the removed /v1/crawl/site/jobs/{id} " +
+        "endpoint. Switch to crawler.site() / waitSiteJob() (the /v1/site path).",
+    );
   }
 
   // ---- Wrapper job management ----

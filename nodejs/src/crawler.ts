@@ -37,6 +37,7 @@ import {
   SiteCrawlResponse,
   SiteCrawlJobStatus,
   WrapperJob,
+  Estimate,
   MarkdownOptions,
   MarkdownManyOptions,
   ScreenshotOptions,
@@ -163,6 +164,8 @@ export interface RunOptions {
   strategy?: 'browser' | 'http';
   proxy?: string | ProxyConfig | Record<string, unknown>;
   bypassCache?: boolean;
+  /** Return a cost estimate instead of running. See {@link Estimate}. */
+  dryRun?: boolean;
   [key: string]: unknown;
 }
 
@@ -194,6 +197,8 @@ export interface SiteOptions {
   wait?: boolean;
   pollInterval?: number;
   timeout?: number;
+  /** Return a cost estimate instead of running. See {@link Estimate}. */
+  dryRun?: boolean;
 }
 
 export interface DeepCrawlOptions {
@@ -223,6 +228,8 @@ export interface DeepCrawlOptions {
   // URL filtering shortcuts
   includePatterns?: string[];
   excludePatterns?: string[];
+  /** Return a cost estimate instead of running. See {@link Estimate}. */
+  dryRun?: boolean;
 }
 
 /**
@@ -261,6 +268,8 @@ export interface EnrichOptions {
   wait?: boolean;
   pollInterval?: number;
   timeout?: number;
+  /** Return a cost estimate instead of running. See {@link Estimate}. */
+  dryRun?: boolean;
 }
 
 /** Edits to apply when resuming a paused enrich job. */
@@ -337,13 +346,30 @@ export class AsyncWebCrawler {
   /**
    * Crawl a single URL.
    */
-  async run(url: string, options: RunOptions = {}): Promise<CrawlResult> {
+  /**
+   * Send a dry-run request and return the raw cost estimate.
+   *
+   * Sets `dry_run: true` on the body and POSTs to the *real* service endpoint.
+   * The server validates + estimates and returns immediately with no
+   * execution, no job, and no charge. The returned object is the
+   * {@link Estimate} — not the normal service result.
+   */
+  private async dryRunEstimate(
+    path: string,
+    body: Record<string, unknown>,
+    timeout?: number,
+  ): Promise<Estimate> {
+    return (await this.http.post(path, { ...body, dry_run: true }, timeout)) as Estimate;
+  }
+
+  async run(url: string, options: RunOptions = {}): Promise<CrawlResult | Estimate> {
     const {
       config,
       browserConfig,
       strategy = 'browser',
       proxy,
       bypassCache = false,
+      dryRun = false,
       ...rest
     } = options;
 
@@ -357,6 +383,7 @@ export class AsyncWebCrawler {
       ...rest,
     });
 
+    if (dryRun) return this.dryRunEstimate('/v1/crawl', body, 120000);
     const data = await this.http.post('/v1/crawl', body, 120000);
     return crawlResultFromDict(data);
   }
@@ -364,7 +391,7 @@ export class AsyncWebCrawler {
   /**
    * Crawl a single URL (OSS compatibility alias for run()).
    */
-  async arun(url: string, options: RunOptions = {}): Promise<CrawlResult> {
+  async arun(url: string, options: RunOptions = {}): Promise<CrawlResult | Estimate> {
     return this.run(url, options);
   }
 
@@ -377,7 +404,7 @@ export class AsyncWebCrawler {
   async runMany(
     urls: string[],
     options: RunManyOptions = {}
-  ): Promise<CrawlJob | CrawlResult[]> {
+  ): Promise<CrawlJob | CrawlResult[] | Estimate> {
     const {
       wait = false,
       pollInterval = 2.0,
@@ -404,14 +431,14 @@ export class AsyncWebCrawler {
   async arunMany(
     urls: string[],
     options: RunManyOptions = {}
-  ): Promise<CrawlJob | CrawlResult[]> {
+  ): Promise<CrawlJob | CrawlResult[] | Estimate> {
     return this.runMany(urls, options);
   }
 
   private async runAsync(
     urls: string[],
     options: RunManyOptions
-  ): Promise<CrawlJob | CrawlResult[]> {
+  ): Promise<CrawlJob | CrawlResult[] | Estimate> {
     const {
       config,
       browserConfig,
@@ -423,6 +450,7 @@ export class AsyncWebCrawler {
       timeout,
       priority = 5,
       webhookUrl,
+      dryRun = false,
       ...rest
     } = options;
 
@@ -441,6 +469,7 @@ export class AsyncWebCrawler {
       body.webhook_url = webhookUrl;
     }
 
+    if (dryRun) return this.dryRunEstimate('/v1/crawl/async', body);
     const data = await this.http.post('/v1/crawl/async', body);
     let job = crawlJobFromDict(data);
 
@@ -547,7 +576,7 @@ export class AsyncWebCrawler {
    * (default) returns a `jobId` immediately and runs best-first recursive
    * crawl across the worker pool via the cloud's WorkerPoolDispatcher.
    */
-  async site(url: string, options: SiteOptions = {}): Promise<DeepCrawlResult> {
+  async site(url: string, options: SiteOptions = {}): Promise<DeepCrawlResult | Estimate> {
     const {
       mode = 'traverse',
       maxUrls,
@@ -567,6 +596,7 @@ export class AsyncWebCrawler {
       wait = false,
       pollInterval = 2.0,
       timeout,
+      dryRun = false,
     } = options;
 
     const body: Record<string, unknown> = {
@@ -595,6 +625,7 @@ export class AsyncWebCrawler {
     if (proxyConfig) body.proxy = proxyConfig;
     if (webhookUrl) body.webhook_url = webhookUrl;
 
+    if (dryRun) return this.dryRunEstimate('/v1/site', body, 120000);
     const data = await this.http.post('/v1/site', body, 120000);
     let result = deepCrawlResultFromDict(data);
 
@@ -649,7 +680,7 @@ export class AsyncWebCrawler {
   async deepCrawl(
     url?: string,
     options: DeepCrawlOptions = {}
-  ): Promise<DeepCrawlResult | CrawlJob> {
+  ): Promise<DeepCrawlResult | CrawlJob | Estimate> {
     const {
       sourceJob,
       strategy = 'bfs',
@@ -675,6 +706,7 @@ export class AsyncWebCrawler {
       scoreThreshold,
       includePatterns,
       excludePatterns,
+      dryRun = false,
     } = options;
 
     if (!url && !sourceJob) {
@@ -744,6 +776,7 @@ export class AsyncWebCrawler {
     if (bypassCache) body.bypass_cache = true;
     if (webhookUrl) body.webhook_url = webhookUrl;
 
+    if (dryRun) return this.dryRunEstimate('/v1/crawl/deep', body, 120000);
     const data = await this.http.post('/v1/crawl/deep', body, 120000);
     let result = deepCrawlResultFromDict(data);
 
@@ -873,7 +906,7 @@ export class AsyncWebCrawler {
   async scan(
     url: string,
     options: ScanOptions = {},
-  ): Promise<ScanResult> {
+  ): Promise<ScanResult | Estimate> {
     let { sources = 'primary' } = options;
     const {
       mode,
@@ -890,6 +923,7 @@ export class AsyncWebCrawler {
       wait = false,
       pollInterval = 2.0,
       timeout,
+      dryRun = false,
     } = options;
 
     if (mode === 'deep') {
@@ -924,6 +958,7 @@ export class AsyncWebCrawler {
     if (scoreThreshold !== undefined) body.score_threshold = scoreThreshold;
     if (probeThreshold !== undefined) body.probe_threshold = probeThreshold;
 
+    if (dryRun) return this.dryRunEstimate('/v1/scan', body, 180000);
     // LLM config generation can take a while on the initial POST.
     const data = await this.http.post('/v1/scan', body, 180000);
     const result = scanResultFromDict(data);
@@ -1119,7 +1154,9 @@ export class AsyncWebCrawler {
     wait?: boolean;
     pollIntervalMs?: number;
     timeoutMs?: number;
-  }): Promise<ContextResult> {
+    /** Return a cost estimate instead of running. See {@link Estimate}. */
+    dryRun?: boolean;
+  }): Promise<ContextResult | Estimate> {
     if (!opts.intent || !opts.intent.trim()) {
       throw new Error('`intent` is required and must be non-empty');
     }
@@ -1128,6 +1165,7 @@ export class AsyncWebCrawler {
     const timeoutMs = opts.timeoutMs ?? 600_000;
 
     const body = this._buildContextBody(opts);
+    if (opts.dryRun) return this.dryRunEstimate('/v1/context', body, 30000);
     const headers: Record<string, string> = {};
     if (opts.idempotencyKey) headers['Idempotency-Key'] = String(opts.idempotencyKey);
 
@@ -1384,9 +1422,11 @@ export class AsyncWebCrawler {
       schemaType?: 'CSS' | 'XPATH';
       targetJsonExample?: Record<string, unknown>;
       llmConfig?: Record<string, unknown>;
+      /** Return a cost estimate instead of running. See {@link Estimate}. */
+      dryRun?: boolean;
     } = {}
-  ): Promise<GeneratedSchema> {
-    const { query, schemaType = 'CSS', targetJsonExample, llmConfig } = options;
+  ): Promise<GeneratedSchema | Estimate> {
+    const { query, schemaType = 'CSS', targetJsonExample, llmConfig, dryRun = false } = options;
 
     const body: Record<string, unknown> = { schema_type: schemaType };
 
@@ -1410,6 +1450,7 @@ export class AsyncWebCrawler {
     if (targetJsonExample) body.target_json_example = targetJsonExample;
     if (llmConfig) body.llm_config = llmConfig;
 
+    if (dryRun) return this.dryRunEstimate('/v1/schema/generate', body, 60000);
     const data = await this.http.post('/v1/schema/generate', body, 60000);
     return generatedSchemaFromDict(data);
   }
@@ -1453,14 +1494,15 @@ export class AsyncWebCrawler {
    * const r = await crawler.scrape('https://example.com', { include: ['links', 'metadata'] });
    * console.log(r.markdown);
    */
-  async scrape(url: string, options: MarkdownOptions = {}): Promise<MarkdownResponse> {
-    const { strategy = 'browser', fit = true, include, crawlerConfig, browserConfig, proxy, bypassCache } = options;
+  async scrape(url: string, options: MarkdownOptions = {}): Promise<MarkdownResponse | Estimate> {
+    const { strategy = 'browser', fit = true, include, crawlerConfig, browserConfig, proxy, bypassCache, dryRun } = options;
     const body: Record<string, unknown> = { url, strategy, fit };
     if (include) body.include = include;
     if (crawlerConfig) body.crawler_config = crawlerConfig;
     if (browserConfig) body.browser_config = browserConfig;
     if (proxy) body.proxy = proxy;
     if (bypassCache) body.bypass_cache = true;
+    if (dryRun) return this.dryRunEstimate('/v1/scrape', body);
     const data = await this.http.post('/v1/scrape', body);
     return markdownResponseFromDict(data);
   }
@@ -1469,15 +1511,15 @@ export class AsyncWebCrawler {
    * @deprecated Use {@link scrape}. `/v1/markdown` was renamed to `/v1/scrape`.
    * Will be removed in 0.8.0.
    */
-  async markdown(url: string, options: MarkdownOptions = {}): Promise<MarkdownResponse> {
+  async markdown(url: string, options: MarkdownOptions = {}): Promise<MarkdownResponse | Estimate> {
     if (typeof process !== 'undefined' && process.emitWarning) {
       process.emitWarning('crawler.markdown() is deprecated — use crawler.scrape().', 'DeprecationWarning');
     }
     return this.scrape(url, options);
   }
 
-  async screenshot(url: string, options: ScreenshotOptions = {}): Promise<ScreenshotResponse> {
-    const { fullPage = true, pdf = false, waitFor, crawlerConfig, browserConfig, proxy, bypassCache } = options;
+  async screenshot(url: string, options: ScreenshotOptions = {}): Promise<ScreenshotResponse | Estimate> {
+    const { fullPage = true, pdf = false, waitFor, crawlerConfig, browserConfig, proxy, bypassCache, dryRun } = options;
     const body: Record<string, unknown> = { url, full_page: fullPage };
     if (pdf) body.pdf = true;
     if (waitFor) body.wait_for = waitFor;
@@ -1485,12 +1527,13 @@ export class AsyncWebCrawler {
     if (browserConfig) body.browser_config = browserConfig;
     if (proxy) body.proxy = proxy;
     if (bypassCache) body.bypass_cache = true;
+    if (dryRun) return this.dryRunEstimate('/v1/screenshot', body, 120000);
     const data = await this.http.post('/v1/screenshot', body, 120000);
     return screenshotResponseFromDict(data);
   }
 
-  async extract(url: string, options: ExtractOptions = {}): Promise<ExtractResponse> {
-    const { query, jsonExample, schema, method = 'auto', strategy = 'http', crawlerConfig, browserConfig, llmConfig, proxy, bypassCache } = options;
+  async extract(url: string, options: ExtractOptions = {}): Promise<ExtractResponse | Estimate> {
+    const { query, jsonExample, schema, method = 'auto', strategy = 'http', crawlerConfig, browserConfig, llmConfig, proxy, bypassCache, dryRun } = options;
     const body: Record<string, unknown> = { url, method, strategy };
     if (query) body.query = query;
     if (jsonExample) body.json_example = jsonExample;
@@ -1500,6 +1543,7 @@ export class AsyncWebCrawler {
     if (llmConfig) body.llm_config = llmConfig;
     if (proxy) body.proxy = proxy;
     if (bypassCache) body.bypass_cache = true;
+    if (dryRun) return this.dryRunEstimate('/v1/extract', body, 180000);
     const data = await this.http.post('/v1/extract', body, 180000);
     return extractResponseFromDict(data);
   }
@@ -1538,8 +1582,8 @@ export class AsyncWebCrawler {
    * Submit an async scrape job over a list of URLs.
    * `POST /v1/scrape/async`. Returns a job; pass `wait: true` to poll until terminal.
    */
-  async scrapeMany(urls: string[], options: MarkdownManyOptions = {}): Promise<WrapperJob> {
-    const { strategy = 'browser', fit = true, include, crawlerConfig, browserConfig, proxy, bypassCache, wait = false, pollInterval = 2, timeout, webhookUrl, priority = 5 } = options;
+  async scrapeMany(urls: string[], options: MarkdownManyOptions = {}): Promise<WrapperJob | Estimate> {
+    const { strategy = 'browser', fit = true, include, crawlerConfig, browserConfig, proxy, bypassCache, wait = false, pollInterval = 2, timeout, webhookUrl, priority = 5, dryRun } = options;
     const body: Record<string, unknown> = { urls, strategy, fit, priority };
     if (include) body.include = include;
     if (crawlerConfig) body.crawler_config = crawlerConfig;
@@ -1547,6 +1591,7 @@ export class AsyncWebCrawler {
     if (proxy) body.proxy = proxy;
     if (bypassCache) body.bypass_cache = true;
     if (webhookUrl) body.webhook_url = webhookUrl;
+    if (dryRun) return this.dryRunEstimate('/v1/scrape/async', body);
     const data = await this.http.post('/v1/scrape/async', body);
     let job = wrapperJobFromDict(data);
     if (wait) job = await this.waitWrapperJob(job.jobId, 'markdown', pollInterval, timeout);
@@ -1556,15 +1601,15 @@ export class AsyncWebCrawler {
   /**
    * @deprecated Use {@link scrapeMany}. Will be removed in 0.8.0.
    */
-  async markdownMany(urls: string[], options: MarkdownManyOptions = {}): Promise<WrapperJob> {
+  async markdownMany(urls: string[], options: MarkdownManyOptions = {}): Promise<WrapperJob | Estimate> {
     if (typeof process !== 'undefined' && process.emitWarning) {
       process.emitWarning('crawler.markdownMany() is deprecated — use crawler.scrapeMany().', 'DeprecationWarning');
     }
     return this.scrapeMany(urls, options);
   }
 
-  async screenshotMany(urls: string[], options: ScreenshotManyOptions = {}): Promise<WrapperJob> {
-    const { fullPage = true, pdf = false, waitFor, crawlerConfig, browserConfig, proxy, bypassCache, wait = false, pollInterval = 2, timeout, webhookUrl, priority = 5 } = options;
+  async screenshotMany(urls: string[], options: ScreenshotManyOptions = {}): Promise<WrapperJob | Estimate> {
+    const { fullPage = true, pdf = false, waitFor, crawlerConfig, browserConfig, proxy, bypassCache, wait = false, pollInterval = 2, timeout, webhookUrl, priority = 5, dryRun } = options;
     const body: Record<string, unknown> = { urls, full_page: fullPage, priority };
     if (pdf) body.pdf = true;
     if (waitFor) body.wait_for = waitFor;
@@ -1573,6 +1618,7 @@ export class AsyncWebCrawler {
     if (proxy) body.proxy = proxy;
     if (bypassCache) body.bypass_cache = true;
     if (webhookUrl) body.webhook_url = webhookUrl;
+    if (dryRun) return this.dryRunEstimate('/v1/screenshot/async', body);
     const data = await this.http.post('/v1/screenshot/async', body);
     let job = wrapperJobFromDict(data);
     if (wait) job = await this.waitWrapperJob(job.jobId, 'screenshot', pollInterval, timeout);
@@ -1595,8 +1641,8 @@ export class AsyncWebCrawler {
    *   for batch as of API v2.2 — the previous "AUTO not allowed for batch"
    *   restriction was removed.
    */
-  async extractMany(url: string, options: ExtractManyOptions): Promise<WrapperJob> {
-    const { extraUrls, method = 'auto', query, jsonExample, schema, strategy = 'http', crawlerConfig, browserConfig, llmConfig, proxy, bypassCache, wait = false, pollInterval = 2, timeout, webhookUrl, priority = 5 } = options;
+  async extractMany(url: string, options: ExtractManyOptions): Promise<WrapperJob | Estimate> {
+    const { extraUrls, method = 'auto', query, jsonExample, schema, strategy = 'http', crawlerConfig, browserConfig, llmConfig, proxy, bypassCache, wait = false, pollInterval = 2, timeout, webhookUrl, priority = 5, dryRun } = options;
     const body: Record<string, unknown> = { url, method, strategy, priority };
     if (extraUrls && extraUrls.length > 0) body.extra_urls = extraUrls;
     if (query) body.query = query;
@@ -1608,6 +1654,7 @@ export class AsyncWebCrawler {
     if (proxy) body.proxy = proxy;
     if (bypassCache) body.bypass_cache = true;
     if (webhookUrl) body.webhook_url = webhookUrl;
+    if (dryRun) return this.dryRunEstimate('/v1/extract/async', body);
     const data = await this.http.post('/v1/extract/async', body);
     let job = wrapperJobFromDict(data);
     if (wait) job = await this.waitWrapperJob(job.jobId, 'extract', pollInterval, timeout);
@@ -1819,7 +1866,7 @@ export class AsyncWebCrawler {
    *   features: ['price', 'hours'],
    * });
    */
-  async enrich(options: EnrichOptions = {}): Promise<EnrichJobStatus> {
+  async enrich(options: EnrichOptions = {}): Promise<EnrichJobStatus | Estimate> {
     const {
       query, entities, criteria, features, urls, groups,
       autoConfirmPlan = true, autoConfirmUrls = true,
@@ -1828,6 +1875,7 @@ export class AsyncWebCrawler {
       config, browserConfig, crawlerConfig, llmConfig,
       proxy, webhookUrl, priority = 5,
       wait = true, pollInterval = 3.0, timeout = 600,
+      dryRun = false,
     } = options;
 
     const body: Record<string, unknown> = {
@@ -1855,6 +1903,7 @@ export class AsyncWebCrawler {
     }
     if (webhookUrl !== undefined) body.webhook_url = webhookUrl;
 
+    if (dryRun) return this.dryRunEstimate('/v1/enrich/async', body);
     const data = await this.http.post('/v1/enrich/async', body);
     const job = enrichJobStatusFromDict(data);
 
@@ -2030,8 +2079,8 @@ export class AsyncWebCrawler {
   async discovery(
     service: string,
     params: Record<string, unknown> = {},
-    options: { wait?: boolean; pollIntervalMs?: number; pollTimeoutMs?: number } = {},
-  ): Promise<SearchResponse | DiscoveryJobHandle | Record<string, unknown>> {
+    options: { wait?: boolean; pollIntervalMs?: number; pollTimeoutMs?: number; dryRun?: boolean } = {},
+  ): Promise<SearchResponse | DiscoveryJobHandle | Estimate | Record<string, unknown>> {
     const wait = options.wait !== false;            // default true
     const pollIntervalMs = options.pollIntervalMs ?? 1500;
     const pollTimeoutMs = options.pollTimeoutMs ?? 5 * 60 * 1000;
@@ -2043,6 +2092,10 @@ export class AsyncWebCrawler {
     for (const [k, v] of Object.entries(params)) {
       if (v !== null && v !== undefined && v !== '') body[k] = v;
     }
+
+    // Dry-run: estimate via the sync endpoint and return immediately — no
+    // synth, no async job, no polling.
+    if (options.dryRun) return this.dryRunEstimate(`/v1/discovery/${service}`, body);
 
     // Synth-aware routing: the sync endpoint 422s when synthesize=true,
     // so the SDK targets /async automatically. wait=true polls; wait=false

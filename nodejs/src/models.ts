@@ -340,6 +340,8 @@ export interface ScanOptions {
   wait?: boolean;
   pollInterval?: number;
   timeout?: number;
+  /** Return a cost estimate instead of running. See {@link Estimate}. */
+  dryRun?: boolean;
 }
 
 /**
@@ -900,6 +902,31 @@ export interface WrapperJob {
   completedAt?: string;
 }
 
+/**
+ * Cost estimate returned by a dry-run request (`dryRun: true`). The endpoint
+ * validates + estimates with no execution, no job, and no charge. Keys are the
+ * raw server fields (snake_case), so this object can be forwarded verbatim.
+ */
+export interface Estimate {
+  service: string;
+  /** Reservable credit cost (string decimal). */
+  credits: string;
+  /** `false` = worst-case upper bound (show "up to N"). */
+  credits_exact: boolean;
+  /** Credit line items. */
+  breakdown: Array<Record<string, unknown>>;
+  /** Informational LLM-token magnitude — post-pay, never added to `credits`. */
+  token_forecast: Array<Record<string, unknown>>;
+  /** `true` when spendable credit >= credits. */
+  covered_by_balance: boolean;
+  /** ceil(credits / 25) — chunk-stop granularity. */
+  chunks_needed: number;
+  /** Live spendable credit (or plan grant). */
+  spendable_credit: string;
+  dry_run: boolean;
+  [key: string]: unknown;
+}
+
 export interface MarkdownOptions {
   strategy?: 'browser' | 'http';
   fit?: boolean;
@@ -908,6 +935,8 @@ export interface MarkdownOptions {
   browserConfig?: Record<string, unknown>;
   proxy?: Record<string, unknown>;
   bypassCache?: boolean;
+  /** Return a cost estimate instead of running. See {@link Estimate}. */
+  dryRun?: boolean;
 }
 
 export interface MarkdownManyOptions extends MarkdownOptions {
@@ -926,6 +955,8 @@ export interface ScreenshotOptions {
   browserConfig?: Record<string, unknown>;
   proxy?: Record<string, unknown>;
   bypassCache?: boolean;
+  /** Return a cost estimate instead of running. See {@link Estimate}. */
+  dryRun?: boolean;
 }
 
 export interface ScreenshotManyOptions extends ScreenshotOptions {
@@ -947,6 +978,8 @@ export interface ExtractOptions {
   llmConfig?: Record<string, unknown>;
   proxy?: Record<string, unknown>;
   bypassCache?: boolean;
+  /** Return a cost estimate instead of running. See {@link Estimate}. */
+  dryRun?: boolean;
 }
 
 export interface ExtractManyOptions extends Omit<ExtractOptions, 'method'> {

@@ -12,7 +12,7 @@
  * ```
  */
 
-export const VERSION = '1.1.0';
+export const VERSION = '1.2.0';
 
 // Main crawler class
 export { AsyncWebCrawler } from './crawler';
@@ -119,6 +119,7 @@ export type {
   StorageUsage,
   ProxyConfig,
   LLMUsage,
+  Estimate,
   // Usage metrics
   Usage,
   CrawlUsageMetrics,

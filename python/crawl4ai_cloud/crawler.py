@@ -177,6 +177,26 @@ class AsyncWebCrawler:
     # Core Crawl Methods
     # -------------------------------------------------------------------------
 
+    async def _dry_run_estimate(
+        self,
+        path: str,
+        body: Dict[str, Any],
+        *,
+        timeout: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Send a dry-run request and return the raw cost estimate.
+
+        Sets ``dry_run: true`` on the body and POSTs to the *real* service
+        endpoint. The server validates + estimates and returns immediately
+        with no execution, no job, and no charge. The returned dict is the
+        estimate (``credits``, ``credits_exact``, ``breakdown``,
+        ``token_forecast``, ``covered_by_balance``, ``chunks_needed``,
+        ``spendable_credit``) — not the normal service result.
+        """
+        return await self._http.request(
+            "POST", path, json={**body, "dry_run": True}, timeout=timeout,
+        )
+
     async def run(
         self,
         url: str,
@@ -185,8 +205,9 @@ class AsyncWebCrawler:
         strategy: str = "browser",
         proxy: Optional[Union[str, Dict[str, Any], ProxyConfig]] = None,
         bypass_cache: bool = False,
+        dry_run: bool = False,
         **kwargs,
-    ) -> CrawlResult:
+    ) -> Union[CrawlResult, Dict[str, Any]]:
         """
         Crawl a single URL.
 
@@ -223,6 +244,8 @@ class AsyncWebCrawler:
             **kwargs,
         )
 
+        if dry_run:
+            return await self._dry_run_estimate("/v1/crawl", body, timeout=120)
         data = await self._http.request("POST", "/v1/crawl", json=body, timeout=120)
         return CrawlResult.from_dict(data)
 
@@ -253,8 +276,9 @@ class AsyncWebCrawler:
         timeout: Optional[float] = None,
         priority: int = 5,
         webhook_url: Optional[str] = None,
+        dry_run: bool = False,
         **kwargs,
-    ) -> CrawlJob:
+    ) -> Union[CrawlJob, Dict[str, Any]]:
         """
         Crawl multiple URLs.
 
@@ -308,6 +332,7 @@ class AsyncWebCrawler:
             timeout=timeout,
             priority=priority,
             webhook_url=webhook_url,
+            dry_run=dry_run,
             **kwargs,
         )
 
@@ -338,8 +363,9 @@ class AsyncWebCrawler:
         timeout: Optional[float] = None,
         priority: int = 5,
         webhook_url: Optional[str] = None,
+        dry_run: bool = False,
         **kwargs,
-    ) -> CrawlJob:
+    ) -> Union[CrawlJob, Dict[str, Any]]:
         """Internal: Async crawl for >10 URLs."""
         body = build_crawl_request(
             urls=urls,
@@ -355,6 +381,8 @@ class AsyncWebCrawler:
         if webhook_url:
             body["webhook_url"] = webhook_url
 
+        if dry_run:
+            return await self._dry_run_estimate("/v1/crawl/async", body)
         data = await self._http.request("POST", "/v1/crawl/async", json=body)
         job = CrawlJob.from_dict(data)
 
@@ -556,7 +584,8 @@ class AsyncWebCrawler:
         wait: bool = False,
         poll_interval: float = 2.0,
         timeout: Optional[float] = None,
-    ) -> DeepCrawlResult:
+        dry_run: bool = False,
+    ) -> Union[DeepCrawlResult, Dict[str, Any]]:
         """Discover or crawl an entire site (canonical, /v1/site).
 
         ``mode='map'`` runs sync sitemap-based URL discovery. ``mode='traverse'``
@@ -621,6 +650,8 @@ class AsyncWebCrawler:
         if webhook_url:
             body["webhook_url"] = webhook_url
 
+        if dry_run:
+            return await self._dry_run_estimate("/v1/site", body, timeout=120)
         data = await self._http.request("POST", "/v1/site", json=body, timeout=120)
         result = DeepCrawlResult.from_dict(data)
 
@@ -692,7 +723,8 @@ class AsyncWebCrawler:
         # URL filtering shortcuts
         include_patterns: Optional[List[str]] = None,
         exclude_patterns: Optional[List[str]] = None,
-    ) -> Union[DeepCrawlResult, CrawlJob]:
+        dry_run: bool = False,
+    ) -> Union[DeepCrawlResult, CrawlJob, Dict[str, Any]]:
         """
         Deep crawl - discover and crawl URLs from a starting point.
 
@@ -830,6 +862,8 @@ class AsyncWebCrawler:
         if webhook_url:
             body["webhook_url"] = webhook_url
 
+        if dry_run:
+            return await self._dry_run_estimate("/v1/crawl/deep", body, timeout=120)
         data = await self._http.request("POST", "/v1/crawl/deep", json=body, timeout=120)
         result = DeepCrawlResult.from_dict(data)
 
@@ -949,7 +983,8 @@ class AsyncWebCrawler:
         wait: bool = False,
         poll_interval: float = 2.0,
         timeout: Optional[float] = None,
-    ) -> "ScanResult":
+        dry_run: bool = False,
+    ) -> Union["ScanResult", Dict[str, Any]]:
         """
         Discover all URLs under a domain. AI-assisted via `criteria`, with
         optional async deep-mode traversal.
@@ -1061,6 +1096,8 @@ class AsyncWebCrawler:
         if probe_threshold != 10:
             body["probe_threshold"] = probe_threshold
 
+        if dry_run:
+            return await self._dry_run_estimate("/v1/scan", body, timeout=180)
         data = await self._http.request("POST", "/v1/scan", json=body, timeout=180)
         result = ScanResult.from_dict(data)
 
@@ -1238,7 +1275,8 @@ class AsyncWebCrawler:
         wait: bool = True,
         poll_interval: float = 3.0,
         timeout: Optional[float] = 600.0,
-    ) -> ContextResult:
+        dry_run: bool = False,
+    ) -> Union[ContextResult, Dict[str, Any]]:
         """Submit a Context run.
 
         One-liner — the user's default generator
@@ -1313,6 +1351,8 @@ class AsyncWebCrawler:
         if idempotency_key:
             headers["Idempotency-Key"] = str(idempotency_key)
 
+        if dry_run:
+            return await self._dry_run_estimate("/v1/context", body, timeout=30.0)
         data = await self._http.request(
             "POST",
             "/v1/context",
@@ -1546,7 +1586,8 @@ class AsyncWebCrawler:
         schema_type: str = "CSS",
         target_json_example: Optional[Dict[str, Any]] = None,
         llm_config: Optional[Dict[str, Any]] = None,
-    ) -> GeneratedSchema:
+        dry_run: bool = False,
+    ) -> Union[GeneratedSchema, Dict[str, Any]]:
         """
         Generate extraction schema from HTML using LLM.
 
@@ -1613,6 +1654,8 @@ class AsyncWebCrawler:
         if llm_config:
             body["llm_config"] = llm_config
 
+        if dry_run:
+            return await self._dry_run_estimate("/v1/schema/generate", body, timeout=60)
         data = await self._http.request("POST", "/v1/schema/generate", json=body, timeout=60)
         return GeneratedSchema.from_dict(data)
 
@@ -1648,7 +1691,8 @@ class AsyncWebCrawler:
         browser_config: Optional[Dict[str, Any]] = None,
         proxy: Optional[Union[str, Dict[str, Any], ProxyConfig]] = None,
         bypass_cache: bool = False,
-    ) -> MarkdownResponse:
+        dry_run: bool = False,
+    ) -> Union[MarkdownResponse, Dict[str, Any]]:
         """Fetch a page, return clean markdown plus optional extras.
 
         ``POST /v1/scrape`` (sync, single URL). Use :meth:`scrape_many` for
@@ -1686,6 +1730,8 @@ class AsyncWebCrawler:
         if bypass_cache:
             body["bypass_cache"] = True
 
+        if dry_run:
+            return await self._dry_run_estimate("/v1/scrape", body)
         data = await self._http.request("POST", "/v1/scrape", json=body)
         return MarkdownResponse.from_dict(data)
 
@@ -1713,7 +1759,8 @@ class AsyncWebCrawler:
         browser_config: Optional[Dict[str, Any]] = None,
         proxy: Optional[Union[str, Dict[str, Any], ProxyConfig]] = None,
         bypass_cache: bool = False,
-    ) -> ScreenshotResponse:
+        dry_run: bool = False,
+    ) -> Union[ScreenshotResponse, Dict[str, Any]]:
         """
         Capture a screenshot or PDF of a web page.
 
@@ -1744,6 +1791,8 @@ class AsyncWebCrawler:
         if bypass_cache:
             body["bypass_cache"] = True
 
+        if dry_run:
+            return await self._dry_run_estimate("/v1/screenshot", body, timeout=120)
         data = await self._http.request("POST", "/v1/screenshot", json=body, timeout=120)
         return ScreenshotResponse.from_dict(data)
 
@@ -1760,7 +1809,8 @@ class AsyncWebCrawler:
         llm_config: Optional[Dict[str, Any]] = None,
         proxy: Optional[Union[str, Dict[str, Any], ProxyConfig]] = None,
         bypass_cache: bool = False,
-    ) -> ExtractResponse:
+        dry_run: bool = False,
+    ) -> Union[ExtractResponse, Dict[str, Any]]:
         """
         Extract structured data from a web page.
 
@@ -1798,6 +1848,8 @@ class AsyncWebCrawler:
         if bypass_cache:
             body["bypass_cache"] = True
 
+        if dry_run:
+            return await self._dry_run_estimate("/v1/extract", body, timeout=180)
         data = await self._http.request("POST", "/v1/extract", json=body, timeout=180)
         return ExtractResponse.from_dict(data)
 
@@ -1877,7 +1929,8 @@ class AsyncWebCrawler:
         timeout: Optional[float] = None,
         webhook_url: Optional[str] = None,
         priority: int = 5,
-    ) -> WrapperJob:
+        dry_run: bool = False,
+    ) -> Union[WrapperJob, Dict[str, Any]]:
         """Submit an async scrape job over a list of URLs.
 
         ``POST /v1/scrape/async``. Returns a :class:`WrapperJob` immediately;
@@ -1912,6 +1965,8 @@ class AsyncWebCrawler:
             body["webhook_url"] = webhook_url
         body["priority"] = priority
 
+        if dry_run:
+            return await self._dry_run_estimate("/v1/scrape/async", body)
         data = await self._http.request("POST", "/v1/scrape/async", json=body)
         job = WrapperJob.from_dict(data)
         if wait:
@@ -1942,7 +1997,8 @@ class AsyncWebCrawler:
         timeout: Optional[float] = None,
         webhook_url: Optional[str] = None,
         priority: int = 5,
-    ) -> WrapperJob:
+        dry_run: bool = False,
+    ) -> Union[WrapperJob, Dict[str, Any]]:
         """Create an async screenshot job for multiple URLs."""
         body: Dict[str, Any] = {"urls": urls, "full_page": full_page}
         if pdf:
@@ -1961,6 +2017,8 @@ class AsyncWebCrawler:
             body["webhook_url"] = webhook_url
         body["priority"] = priority
 
+        if dry_run:
+            return await self._dry_run_estimate("/v1/screenshot/async", body)
         data = await self._http.request("POST", "/v1/screenshot/async", json=body)
         job = WrapperJob.from_dict(data)
         if wait:
@@ -1986,7 +2044,8 @@ class AsyncWebCrawler:
         timeout: Optional[float] = None,
         webhook_url: Optional[str] = None,
         priority: int = 5,
-    ) -> WrapperJob:
+        dry_run: bool = False,
+    ) -> Union[WrapperJob, Dict[str, Any]]:
         """Submit an async extract job over one base URL plus optional followers.
 
         ``POST /v1/extract/async``. The base ``url`` is the schema **template**
@@ -2039,6 +2098,8 @@ class AsyncWebCrawler:
             body["webhook_url"] = webhook_url
         body["priority"] = priority
 
+        if dry_run:
+            return await self._dry_run_estimate("/v1/extract/async", body)
         data = await self._http.request("POST", "/v1/extract/async", json=body)
         job = WrapperJob.from_dict(data)
         if wait:
@@ -2433,7 +2494,8 @@ class AsyncWebCrawler:
         wait: bool = True,
         poll_interval: float = 3.0,
         timeout: Optional[float] = 600.0,
-    ) -> "EnrichJobStatus":
+        dry_run: bool = False,
+    ) -> Union["EnrichJobStatus", Dict[str, Any]]:
         """Create a multi-phase enrichment job.
 
         The phase machine:
@@ -2543,6 +2605,8 @@ class AsyncWebCrawler:
         if webhook_url is not None:
             body["webhook_url"] = webhook_url
 
+        if dry_run:
+            return await self._dry_run_estimate("/v1/enrich/async", body)
         data = await self._http.request("POST", "/v1/enrich/async", json=body)
         # POST returns the create envelope (job_id, status, created_at).
         # Re-fetch the full status if we're going to wait, otherwise return
@@ -2721,6 +2785,7 @@ class AsyncWebCrawler:
         wait: bool = True,
         poll_interval_s: float = 1.5,
         poll_timeout_s: float = 300.0,
+        dry_run: bool = False,
         **params: Any,
     ) -> Any:
         """Run a Discovery vertical and return the typed response.
@@ -2851,6 +2916,11 @@ class AsyncWebCrawler:
         # parity with the playground avoids surprise cache-misses between
         # surfaces that hit the same params.
         body = {k: v for k, v in params.items() if v is not None and v != ""}
+
+        # Dry-run: estimate via the sync endpoint and return immediately —
+        # no synth, no async job, no polling.
+        if dry_run:
+            return await self._dry_run_estimate(f"/v1/discovery/{service}", body)
 
         # Synth-aware routing: the sync endpoint 422s when synthesize=true,
         # so the SDK targets /async automatically. wait=True polls; wait=False
